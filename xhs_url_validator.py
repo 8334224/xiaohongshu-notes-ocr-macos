@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import re
+from urllib.request import Request, urlopen
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from utils import AppError
 
+URL_PATTERN = re.compile(r"https?://[^\s]+", re.IGNORECASE)
 SUPPORTED_HOST_SUFFIXES = ("xiaohongshu.com",)
+SHORT_LINK_HOST_SUFFIXES = ("xhslink.com",)
 SUPPORTED_PATH_PREFIXES = (
     "/explore/",
     "/discovery/item/",
@@ -22,7 +25,9 @@ def validate_xhs_note_url(raw_text: str) -> str:
     if not text:
         raise AppError("剪贴板为空，请先复制一条小红书笔记网页链接。")
 
-    parsed = urlparse(text)
+    extracted_url = _extract_url_from_text(text)
+    resolved_url = _resolve_short_url_if_needed(extracted_url)
+    parsed = urlparse(resolved_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise AppError("剪贴板内容不是合法 URL。")
 
@@ -60,3 +65,34 @@ def _build_explore_url(note_id: str, parsed) -> str:
     """Build a canonical explore URL while preserving the original query string."""
     query = urlencode(parse_qsl(parsed.query, keep_blank_values=True))
     return urlunparse((parsed.scheme, "www.xiaohongshu.com", f"/explore/{note_id}", "", query, ""))
+
+
+def _extract_url_from_text(text: str) -> str:
+    """Extract the first HTTP(S) URL from clipboard text."""
+    match = URL_PATTERN.search(text)
+    if not match:
+        raise AppError("剪贴板内容不是合法 URL。")
+    return match.group(0).rstrip("!！）)]}>\"'")
+
+
+def _resolve_short_url_if_needed(url: str) -> str:
+    """Resolve Xiaohongshu short links into their final note URLs."""
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if not any(host == suffix or host.endswith(f".{suffix}") for suffix in SHORT_LINK_HOST_SUFFIXES):
+        return url
+
+    request = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            return response.geturl()
+    except Exception as exc:
+        raise AppError(f"小红书短链解析失败：{url}") from exc

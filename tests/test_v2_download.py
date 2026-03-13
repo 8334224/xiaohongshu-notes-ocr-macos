@@ -69,6 +69,59 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             "https://www.xiaohongshu.com/explore/699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like&foo=bar",
         )
 
+    @patch("xhs_url_validator.urlopen")
+    def test_validate_url_accepts_app_share_text_with_short_link(self, mock_urlopen) -> None:
+        mock_urlopen.return_value.__enter__.return_value.geturl.return_value = (
+            "https://www.xiaohongshu.com/explore/699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like"
+        )
+        share_text = (
+            "已确认，doubao-seed-2.0-Pro（high）可以弃 养了一只... "
+            "http://xhslink.com/o/7eY9oEZvLlY \n"
+            "Copy and open Xiaohongshu to view the full post！"
+        )
+
+        normalized = validate_xhs_note_url(share_text)
+
+        self.assertEqual(
+            normalized,
+            "https://www.xiaohongshu.com/explore/699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like",
+        )
+
+    @patch("xhs_url_validator.urlopen")
+    def test_validate_url_normalizes_short_link_resolved_profile_shape(self, mock_urlopen) -> None:
+        mock_urlopen.return_value.__enter__.return_value.geturl.return_value = (
+            "https://www.xiaohongshu.com/user/profile/5d3f838900000000120033a4/"
+            "699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like"
+        )
+
+        normalized = validate_xhs_note_url("https://xhslink.com/o/7eY9oEZvLlY")
+
+        self.assertEqual(
+            normalized,
+            "https://www.xiaohongshu.com/explore/699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like",
+        )
+
+    @patch("xhs_url_validator.urlopen")
+    def test_validate_url_short_link_preserves_query_parameters_from_resolved_url(self, mock_urlopen) -> None:
+        mock_urlopen.return_value.__enter__.return_value.geturl.return_value = (
+            "https://www.xiaohongshu.com/user/profile/5d3f838900000000120033a4/"
+            "699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like&foo=bar"
+        )
+
+        normalized = validate_xhs_note_url("https://xhslink.com/o/7eY9oEZvLlY")
+
+        self.assertEqual(
+            normalized,
+            "https://www.xiaohongshu.com/explore/699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like&foo=bar",
+        )
+
+    @patch("xhs_url_validator.urlopen")
+    def test_validate_url_raises_when_short_link_resolution_fails(self, mock_urlopen) -> None:
+        mock_urlopen.side_effect = OSError("network down")
+
+        with self.assertRaisesRegex(AppError, "短链解析失败"):
+            validate_xhs_note_url("https://xhslink.com/o/7eY9oEZvLlY")
+
     def test_sanitize_filename_component(self) -> None:
         self.assertEqual(sanitize_filename_component(' 标题:/?<>*_"测试" '), "标题 测试")
 

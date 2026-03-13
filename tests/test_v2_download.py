@@ -10,8 +10,9 @@ from downloader_utils import build_download_filename, cleanup_ocr_image_files, s
 from main import run_existing_images_flow, run_from_clipboard_flow
 from parser import parse_image_filename
 from utils import AppError
-from xhs_downloader import XiaohongshuDownloader
-from xhs_url_validator import validate_xhs_note_url
+from xhs_downloader import ExtractedNote, XiaohongshuDownloader
+from xhs_url_validator import ParsedXhsUrl, parse_xhs_url, validate_xhs_note_url
+from xhs_public_fetcher import PublicFetchResult
 
 
 class ClipboardAndDownloadTests(unittest.TestCase):
@@ -69,6 +70,38 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             "https://www.xiaohongshu.com/explore/699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like&foo=bar",
         )
 
+    def test_parse_xhs_url_returns_structured_result_for_explore_url(self) -> None:
+        url = "https://www.xiaohongshu.com/explore/699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like"
+
+        parsed = parse_xhs_url(url)
+
+        self.assertIsInstance(parsed, ParsedXhsUrl)
+        self.assertEqual(parsed.original_input, url)
+        self.assertEqual(parsed.extracted_url, url)
+        self.assertEqual(parsed.resolved_url, url)
+        self.assertEqual(parsed.canonical_url, url)
+        self.assertEqual(parsed.note_id, "699be056000000000c0349ff")
+        self.assertEqual(parsed.xsec_token, "abc")
+        self.assertEqual(parsed.xsec_source, "pc_like")
+        self.assertIsNone(parsed.share_link_host)
+
+    def test_parse_xhs_url_normalizes_profile_shape_and_extracts_fields(self) -> None:
+        profile_url = (
+            "https://www.xiaohongshu.com/user/profile/5d3f838900000000120033a4/"
+            "699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like"
+        )
+
+        parsed = parse_xhs_url(profile_url)
+
+        self.assertEqual(
+            parsed.canonical_url,
+            "https://www.xiaohongshu.com/explore/699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like",
+        )
+        self.assertEqual(parsed.note_id, "699be056000000000c0349ff")
+        self.assertEqual(parsed.xsec_token, "abc")
+        self.assertEqual(parsed.xsec_source, "pc_like")
+        self.assertEqual(parsed.resolved_url, profile_url)
+
     @patch("xhs_url_validator.urlopen")
     def test_validate_url_accepts_app_share_text_with_short_link(self, mock_urlopen) -> None:
         mock_urlopen.return_value.__enter__.return_value.geturl.return_value = (
@@ -86,6 +119,27 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             normalized,
             "https://www.xiaohongshu.com/explore/699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like",
         )
+
+    @patch("xhs_url_validator.urlopen")
+    def test_parse_xhs_url_tracks_share_link_metadata(self, mock_urlopen) -> None:
+        resolved_url = "https://www.xiaohongshu.com/explore/699be056000000000c0349ff?xsec_token=abc&xsec_source=pc_like"
+        mock_urlopen.return_value.__enter__.return_value.geturl.return_value = resolved_url
+        share_text = (
+            "已确认，doubao-seed-2.0-Pro（high）可以弃 养了一只... "
+            "http://xhslink.com/o/7eY9oEZvLlY \n"
+            "Copy and open Xiaohongshu to view the full post！"
+        )
+
+        parsed = parse_xhs_url(share_text)
+
+        self.assertEqual(parsed.original_input, share_text)
+        self.assertEqual(parsed.extracted_url, "http://xhslink.com/o/7eY9oEZvLlY")
+        self.assertEqual(parsed.resolved_url, resolved_url)
+        self.assertEqual(parsed.canonical_url, resolved_url)
+        self.assertEqual(parsed.note_id, "699be056000000000c0349ff")
+        self.assertEqual(parsed.xsec_token, "abc")
+        self.assertEqual(parsed.xsec_source, "pc_like")
+        self.assertEqual(parsed.share_link_host, "xhslink.com")
 
     @patch("xhs_url_validator.urlopen")
     def test_validate_url_normalizes_short_link_resolved_profile_shape(self, mock_urlopen) -> None:
@@ -220,6 +274,199 @@ class ClipboardAndDownloadTests(unittest.TestCase):
 
         self.assertTrue(downloader.use_local_chrome)
         self.assertEqual(downloader.chrome_cdp_url, "http://127.0.0.1:9333")
+
+    def test_public_fetch_quality_rejects_generic_title_and_missing_author(self) -> None:
+        result = PublicFetchResult(
+            final_url="https://www.xiaohongshu.com/explore/abc123",
+            image_urls=["https://img.example.com/1.jpg"],
+            title="小红书 - 你的生活兴趣社区",
+            author=None,
+            extraction_method="meta_tags",
+            html_path="/tmp/public_note.html",
+        )
+
+        usable, reasons = XiaohongshuDownloader._is_public_fetch_usable(result)
+
+        self.assertFalse(usable)
+        self.assertIn("标题仍是通用站点标题", reasons)
+        self.assertIn("缺少作者", reasons)
+
+    def test_public_fetch_quality_rejects_meta_only_cover_result(self) -> None:
+        result = PublicFetchResult(
+            final_url="https://www.xiaohongshu.com/explore/abc123",
+            image_urls=["https://img.example.com/cover.jpg"],
+            title="标题",
+            author="作者",
+            extraction_method="meta_tags",
+            html_path="/tmp/public_fetch.html",
+        )
+
+        usable, reasons = XiaohongshuDownloader._is_public_fetch_usable(result)
+
+        self.assertFalse(usable)
+        self.assertIn("仅抓到 meta 封面图，结果可信度不足", reasons)
+
+    def test_public_fetch_quality_accepts_complete_public_result(self) -> None:
+        result = PublicFetchResult(
+            final_url="https://www.xiaohongshu.com/explore/abc123",
+            image_urls=["https://img.example.com/1.jpg"],
+            title="标题",
+            author="作者",
+            extraction_method="embedded_json",
+            html_path="/tmp/public_note.html",
+        )
+
+        usable, reasons = XiaohongshuDownloader._is_public_fetch_usable(result)
+
+        self.assertTrue(usable)
+        self.assertEqual(reasons, [])
+
+    @patch("xhs_downloader.fetch_public_note")
+    @patch.object(XiaohongshuDownloader, "_extract_note")
+    def test_downloader_prefers_public_fetch_before_browser_fallback(
+        self,
+        mock_extract_note,
+        mock_fetch_public_note,
+    ) -> None:
+        parsed = ParsedXhsUrl(
+            original_input="https://www.xiaohongshu.com/explore/abc123",
+            extracted_url="https://www.xiaohongshu.com/explore/abc123",
+            resolved_url="https://www.xiaohongshu.com/explore/abc123",
+            canonical_url="https://www.xiaohongshu.com/explore/abc123",
+            note_id="abc123",
+            xsec_token=None,
+            xsec_source=None,
+            share_link_host=None,
+        )
+        mock_fetch_public_note.return_value = PublicFetchResult(
+            final_url=parsed.canonical_url,
+            image_urls=["https://img.example.com/1.jpg"],
+            title="标题",
+            author="作者",
+            extraction_method="embedded_json",
+            html_path=None,
+        )
+
+        note = XiaohongshuDownloader()._extract_note_with_fallback(parsed)
+
+        self.assertEqual(note.title, "标题")
+        self.assertEqual(note.author, "作者")
+        self.assertEqual(note.image_urls, ["https://img.example.com/1.jpg"])
+        mock_extract_note.assert_not_called()
+
+    @patch("xhs_downloader.fetch_public_note")
+    @patch.object(XiaohongshuDownloader, "_extract_note")
+    def test_downloader_falls_back_when_public_result_is_incomplete(
+        self,
+        mock_extract_note,
+        mock_fetch_public_note,
+    ) -> None:
+        parsed = ParsedXhsUrl(
+            original_input="https://www.xiaohongshu.com/explore/abc123",
+            extracted_url="https://www.xiaohongshu.com/explore/abc123",
+            resolved_url="https://www.xiaohongshu.com/explore/abc123",
+            canonical_url="https://www.xiaohongshu.com/explore/abc123",
+            note_id="abc123",
+            xsec_token=None,
+            xsec_source=None,
+            share_link_host=None,
+        )
+        mock_fetch_public_note.return_value = PublicFetchResult(
+            final_url=parsed.canonical_url,
+            image_urls=["https://img.example.com/1.jpg"],
+            title="小红书 - 你的生活兴趣社区",
+            author="",
+            extraction_method="meta_tags",
+            html_path=None,
+        )
+        mock_extract_note.return_value = ExtractedNote(
+            title="标题",
+            author="作者",
+            image_urls=["https://img.example.com/1.jpg"],
+        )
+
+        note = XiaohongshuDownloader()._extract_note_with_fallback(parsed)
+
+        self.assertEqual(note.title, "标题")
+        mock_extract_note.assert_called_once_with(parsed.canonical_url)
+
+    @patch("xhs_downloader.fetch_public_note")
+    @patch.object(XiaohongshuDownloader, "_extract_note")
+    def test_downloader_falls_back_to_browser_when_public_fetch_fails(
+        self,
+        mock_extract_note,
+        mock_fetch_public_note,
+    ) -> None:
+        parsed = ParsedXhsUrl(
+            original_input="https://www.xiaohongshu.com/explore/abc123",
+            extracted_url="https://www.xiaohongshu.com/explore/abc123",
+            resolved_url="https://www.xiaohongshu.com/explore/abc123",
+            canonical_url="https://www.xiaohongshu.com/explore/abc123",
+            note_id="abc123",
+            xsec_token=None,
+            xsec_source=None,
+            share_link_host=None,
+        )
+        mock_fetch_public_note.side_effect = AppError("public blocked")
+        mock_extract_note.return_value = ExtractedNote(
+            title="标题",
+            author="作者",
+            image_urls=["https://img.example.com/1.jpg"],
+        )
+
+        note = XiaohongshuDownloader()._extract_note_with_fallback(parsed)
+
+        self.assertEqual(note.title, "标题")
+        self.assertEqual(note.author, "作者")
+        mock_extract_note.assert_called_once_with(parsed.canonical_url)
+
+    def test_public_fetch_failure_debug_summary_is_written(self) -> None:
+        parsed = ParsedXhsUrl(
+            original_input="https://www.xiaohongshu.com/explore/abc123",
+            extracted_url="https://www.xiaohongshu.com/explore/abc123",
+            resolved_url="https://www.xiaohongshu.com/explore/abc123",
+            canonical_url="https://www.xiaohongshu.com/explore/abc123",
+            note_id="abc123",
+            xsec_token=None,
+            xsec_source=None,
+            share_link_host=None,
+        )
+        with TemporaryDirectory() as temp_dir:
+            downloader = XiaohongshuDownloader(debug_folder=Path(temp_dir))
+            debug_path = Path(temp_dir) / "public_fetch_debug.txt"
+
+            downloader._write_public_fetch_failure_debug(debug_path, parsed, "public blocked")
+
+            content = debug_path.read_text(encoding="utf-8")
+            self.assertIn("canonical_url: https://www.xiaohongshu.com/explore/abc123", content)
+            self.assertIn("quality_passed: false", content)
+            self.assertIn("quality_reasons: public blocked", content)
+
+    @patch.object(XiaohongshuDownloader, "download_from_parsed_url")
+    @patch("xhs_downloader.parse_xhs_url")
+    def test_download_from_url_parses_structured_url_before_download(
+        self,
+        mock_parse_xhs_url,
+        mock_download_from_parsed_url,
+    ) -> None:
+        parsed = ParsedXhsUrl(
+            original_input="https://www.xiaohongshu.com/explore/abc123",
+            extracted_url="https://www.xiaohongshu.com/explore/abc123",
+            resolved_url="https://www.xiaohongshu.com/explore/abc123",
+            canonical_url="https://www.xiaohongshu.com/explore/abc123",
+            note_id="abc123",
+            xsec_token=None,
+            xsec_source=None,
+            share_link_host=None,
+        )
+        mock_parse_xhs_url.return_value = parsed
+        mock_download_from_parsed_url.return_value = [Path("/tmp/fake.jpg")]
+
+        result = XiaohongshuDownloader().download_from_url("https://www.xiaohongshu.com/explore/abc123")
+
+        self.assertEqual(result, [Path("/tmp/fake.jpg")])
+        mock_parse_xhs_url.assert_called_once_with("https://www.xiaohongshu.com/explore/abc123")
+        mock_download_from_parsed_url.assert_called_once_with(parsed)
 
     @patch("main.run_existing_images_flow")
     @patch("main.XiaohongshuDownloader")

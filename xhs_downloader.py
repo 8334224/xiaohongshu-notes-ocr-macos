@@ -17,6 +17,8 @@ from config import (
 )
 from downloader_utils import build_download_filename, cleanup_ocr_image_files, ensure_ocr_folder
 from utils import AppError
+from xhs_public_fetcher import fetch_public_note
+from xhs_url_validator import ParsedXhsUrl, parse_xhs_url
 
 IMAGE_URL_PATTERN = re.compile(r"https?://[^\s\"']+\.(?:jpg|jpeg|png|webp)(?:\?[^\s\"']*)?", re.IGNORECASE)
 
@@ -67,13 +69,17 @@ class XiaohongshuDownloader:
 
     def download_from_url(self, url: str) -> list[Path]:
         """Download note images into the OCR folder and return their paths."""
+        return self.download_from_parsed_url(parse_xhs_url(url))
+
+    def download_from_parsed_url(self, parsed_url: ParsedXhsUrl) -> list[Path]:
+        """Download note images using public fetch first, then browser fallback."""
         self.output_folder.mkdir(parents=True, exist_ok=True)
         folder = self.output_folder
         removed = cleanup_ocr_image_files(folder)
         if removed:
             print(f"已清理 OCR 目录中的旧图片：{len(removed)} 张")
 
-        note = self._extract_note(url)
+        note = self._extract_note_with_fallback(parsed_url)
         if not note.image_urls:
             raise AppError("页面没有可下载的图片。")
 
@@ -81,7 +87,7 @@ class XiaohongshuDownloader:
         for index, image_url in enumerate(note.image_urls, start=1):
             filename = build_download_filename(note.title, note.author, index, image_url)
             target_path = folder / filename
-            self._download_image(image_url, target_path, referer=url)
+            self._download_image(image_url, target_path, referer=parsed_url.canonical_url)
             downloaded_paths.append(target_path)
 
         print(f"最终下载数量：{len(downloaded_paths)}")
@@ -90,6 +96,111 @@ class XiaohongshuDownloader:
             raise AppError("下载后图片数量为 0，任务已终止。")
 
         return downloaded_paths
+
+    def _extract_note_with_fallback(self, parsed_url: ParsedXhsUrl) -> ExtractedNote:
+        """Try public no-login extraction first, then fall back to browser extraction."""
+        public_debug_path = self.debug_folder / "public_fetch.html"
+        public_debug_summary_path = self.debug_folder / "public_fetch_debug.txt"
+        print("抓取路径：先尝试免登录公开抓取")
+        try:
+            public_result = fetch_public_note(parsed_url, html_output_path=public_debug_path)
+            print(
+                "公开抓取结果："
+                f"final_url={public_result.final_url}, "
+                f"method={public_result.extraction_method or 'none'}, "
+                f"title={bool(public_result.title)}, "
+                f"author={bool(public_result.author)}, "
+                f"images={len(public_result.image_urls)}"
+            )
+            if public_result.html_path:
+                print(f"公开抓取 HTML 已保存：{public_result.html_path}")
+
+            is_usable, reasons = self._is_public_fetch_usable(public_result)
+            self._write_public_fetch_debug(public_debug_summary_path, parsed_url, public_result, reasons=reasons)
+            if is_usable:
+                print(
+                    "抓取路径：免登录公开抓取成功"
+                    f"{len(public_result.image_urls)} 张图，method={public_result.extraction_method or 'unknown'}"
+                )
+                return ExtractedNote(
+                    title=public_result.title,
+                    author=public_result.author,
+                    image_urls=public_result.image_urls,
+                )
+
+            raise AppError(f"公开抓取结果未通过质量判定：{'; '.join(reasons)}")
+        except AppError as exc:
+            if not public_debug_summary_path.exists():
+                self._write_public_fetch_failure_debug(public_debug_summary_path, parsed_url, str(exc))
+            print(f"抓取路径：免登录公开抓取未成功：{exc}")
+            print(f"公开抓取调试摘要：{public_debug_summary_path}")
+            print("抓取路径：开始回退到浏览器抓取")
+            return self._extract_note(parsed_url.canonical_url)
+
+    @staticmethod
+    def _is_public_fetch_usable(public_result) -> tuple[bool, list[str]]:
+        """Return whether a public fetch result is complete enough to skip browser fallback."""
+        reasons: list[str] = []
+        final_host = urlparse(public_result.final_url).netloc.lower()
+        if not final_host.endswith("xiaohongshu.com"):
+            reasons.append("final_url 不是小红书域名")
+        if not public_result.title:
+            reasons.append("缺少标题")
+        elif public_result.title in {"小红书 - 你的生活兴趣社区", "安全限制"}:
+            reasons.append("标题仍是通用站点标题")
+        if not public_result.author:
+            reasons.append("缺少作者")
+        elif public_result.author in {"登录", "手机号登录", "获取验证码"}:
+            reasons.append("作者字段命中了登录门槛文案")
+        if not public_result.image_urls:
+            reasons.append("没有抓到图片")
+        if not public_result.extraction_method:
+            reasons.append("没有提取来源标记")
+        elif public_result.extraction_method == "meta_tags":
+            reasons.append("仅抓到 meta 封面图，结果可信度不足")
+        return not reasons, reasons
+
+    def _write_public_fetch_debug(self, path: Path, parsed_url: ParsedXhsUrl, public_result, reasons: list[str]) -> None:
+        """Write a small debug summary for the public fetch attempt."""
+        try:
+            self._ensure_debug_folder()
+            lines = [
+                f"original_input: {parsed_url.original_input}",
+                f"canonical_url: {parsed_url.canonical_url}",
+                f"final_url: {public_result.final_url}",
+                f"note_id: {parsed_url.note_id}",
+                f"xsec_token: {parsed_url.xsec_token or ''}",
+                f"xsec_source: {parsed_url.xsec_source or ''}",
+                f"share_link_host: {parsed_url.share_link_host or ''}",
+                f"title: {public_result.title or ''}",
+                f"author: {public_result.author or ''}",
+                f"image_count: {len(public_result.image_urls)}",
+                f"extraction_method: {public_result.extraction_method or ''}",
+                f"html_path: {public_result.html_path or ''}",
+                f"quality_passed: {str(not reasons).lower()}",
+                f"quality_reasons: {'; '.join(reasons)}",
+            ]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:  # pragma: no cover
+            return
+
+    def _write_public_fetch_failure_debug(self, path: Path, parsed_url: ParsedXhsUrl, error_message: str) -> None:
+        """Write a debug summary when public fetching fails before producing a result."""
+        try:
+            self._ensure_debug_folder()
+            lines = [
+                f"original_input: {parsed_url.original_input}",
+                f"canonical_url: {parsed_url.canonical_url}",
+                f"note_id: {parsed_url.note_id}",
+                f"xsec_token: {parsed_url.xsec_token or ''}",
+                f"xsec_source: {parsed_url.xsec_source or ''}",
+                f"share_link_host: {parsed_url.share_link_host or ''}",
+                "quality_passed: false",
+                f"quality_reasons: {error_message}",
+            ]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:  # pragma: no cover
+            return
 
     def _extract_note(self, url: str) -> ExtractedNote:
         """Use Playwright to extract title, author and image URLs from a note page."""

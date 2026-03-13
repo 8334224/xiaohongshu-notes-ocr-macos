@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
+from typing import Optional
 from urllib.request import Request, urlopen
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -19,13 +21,33 @@ SUPPORTED_PATH_PREFIXES = (
 PROFILE_NOTE_PATTERN = re.compile(r"^/user/profile/(?P<user_id>[^/]+)/(?P<note_id>[^/?#]+)$")
 
 
+@dataclass(frozen=True)
+class ParsedXhsUrl:
+    """Structured Xiaohongshu note URL parsing result."""
+
+    original_input: str
+    extracted_url: str
+    resolved_url: str
+    canonical_url: str
+    note_id: str
+    xsec_token: Optional[str]
+    xsec_source: Optional[str]
+    share_link_host: Optional[str]
+
+
 def validate_xhs_note_url(raw_text: str) -> str:
     """Validate and normalize a clipboard string as a supported Xiaohongshu note URL."""
+    return parse_xhs_url(raw_text).canonical_url
+
+
+def parse_xhs_url(raw_text: str) -> ParsedXhsUrl:
+    """Parse a clipboard string into a structured Xiaohongshu note URL result."""
     text = raw_text.strip()
     if not text:
         raise AppError("剪贴板为空，请先复制一条小红书笔记网页链接。")
 
     extracted_url = _extract_url_from_text(text)
+    share_link_host = _extract_share_link_host(extracted_url)
     resolved_url = _resolve_short_url_if_needed(extracted_url)
     parsed = urlparse(resolved_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -36,22 +58,38 @@ def validate_xhs_note_url(raw_text: str) -> str:
         raise AppError("不是支持的小红书笔记网页链接。")
 
     if any(parsed.path.startswith(prefix) for prefix in SUPPORTED_PATH_PREFIXES):
-        return _normalize_explore_url(parsed)
+        canonical_url, note_id = _normalize_explore_url(parsed)
+    else:
+        match = PROFILE_NOTE_PATTERN.fullmatch(parsed.path)
+        if not match:
+            raise AppError("不是支持的小红书图文笔记链接。")
+        note_id = match.group("note_id")
+        canonical_url = _normalize_profile_note_url(parsed, note_id)
 
-    match = PROFILE_NOTE_PATTERN.fullmatch(parsed.path)
-    if match:
-        return _normalize_profile_note_url(parsed, match.group("note_id"))
+    canonical_parsed = urlparse(canonical_url)
+    query_params = dict(parse_qsl(canonical_parsed.query, keep_blank_values=True))
+    return ParsedXhsUrl(
+        original_input=raw_text,
+        extracted_url=extracted_url,
+        resolved_url=resolved_url,
+        canonical_url=canonical_url,
+        note_id=note_id,
+        xsec_token=query_params.get("xsec_token"),
+        xsec_source=query_params.get("xsec_source"),
+        share_link_host=share_link_host,
+    )
 
-    raise AppError("不是支持的小红书图文笔记链接。")
 
-
-def _normalize_explore_url(parsed) -> str:
+def _normalize_explore_url(parsed) -> tuple[str, str]:
     """Normalize a supported note URL to the canonical explore form when possible."""
-    if parsed.path.startswith("/explore/"):
-        return parsed.geturl()
-
     note_id = parsed.path.rstrip("/").split("/")[-1]
-    return _build_explore_url(note_id, parsed)
+    if not note_id:
+        raise AppError("不是支持的小红书图文笔记链接。")
+
+    if parsed.path.startswith("/explore/"):
+        return parsed.geturl(), note_id
+
+    return _build_explore_url(note_id, parsed), note_id
 
 
 def _normalize_profile_note_url(parsed, note_id: str) -> str:
@@ -73,6 +111,14 @@ def _extract_url_from_text(text: str) -> str:
     if not match:
         raise AppError("剪贴板内容不是合法 URL。")
     return match.group(0).rstrip("!！）)]}>\"'")
+
+
+def _extract_share_link_host(url: str) -> Optional[str]:
+    """Return the short-link host when the extracted URL is a share-link."""
+    host = urlparse(url).netloc.lower()
+    if any(host == suffix or host.endswith(f".{suffix}") for suffix in SHORT_LINK_HOST_SUFFIXES):
+        return host
+    return None
 
 
 def _resolve_short_url_if_needed(url: str) -> str:

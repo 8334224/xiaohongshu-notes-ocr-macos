@@ -24,9 +24,11 @@
 - 支持两种小红书笔记 URL 形态：
   - `/explore/<note_id>`
   - `/user/profile/<user_id>/<note_id>`
+- 支持从分享文案中提取 URL，并支持 `xhslink.com` 短链展开
 - URL 会先规范化，再进入统一下载流程
+- 下载策略为“免登录公开抓取优先，浏览器兜底”
 - 支持 Playwright 默认 Chromium 抓取
-- 支持复用本机已登录 Chrome 会话（CDP）
+- 支持复用本机已登录 Chrome 会话（CDP），作为更强的浏览器兜底
 - 自动下载正文图片并按页码命名
 - 使用 macOS Vision OCR 识别中英文混排文本
 - 自动写入 Apple Notes
@@ -76,9 +78,17 @@ python3 main.py --from-clipboard --use-local-chrome --chrome-cdp-url http://127.
 ## Workflow
 
 ```text
-Clipboard URL / Local Images
+Clipboard URL / direct URL
         ↓
-Download note images (optional)
+Resolve and normalize Xiaohongshu URL
+        ↓
+Try public HTTP fetch first
+        ↓
+If public fetch is incomplete or fails -> browser fallback
+        ↓
+If enabled, local Chrome can still be used as stronger fallback
+        ↓
+Download images
         ↓
 Filename parsing and ordering
         ↓
@@ -90,6 +100,29 @@ Write to Apple Notes
         ↓
 Export output.txt
 ```
+
+## Download Strategy
+
+当前链接下载模式的优先级是：
+
+1. 先把剪贴板文本解析成结构化小红书 URL
+2. 先尝试免登录公开抓取 HTML
+3. 如果公开抓取拿到完整结果，则直接下载正文图片
+4. 如果公开抓取失败，或结果质量不足，则回退到浏览器抓取
+5. 如果启用了 `--use-local-chrome`，浏览器兜底阶段会继续复用本机已登录 Chrome
+
+注意：
+
+- 并不是所有小红书笔记都能通过免登录公开抓取拿到完整结果
+- 遇到公开抓取失败、质量不足、登录门槛或风控页面时，程序会自动回退到浏览器方案
+
+这里的“公开抓取结果质量不足”目前至少包括：
+
+- 缺少标题
+- 缺少作者
+- 没有抓到图片
+- 标题仍是通用站点标题，例如 `小红书 - 你的生活兴趣社区`
+- 作者字段明显是登录门槛文案
 
 ## Project Structure
 
@@ -106,11 +139,13 @@ project/
   utils.py
   clipboard_reader.py
   xhs_url_validator.py
+  xhs_public_fetcher.py
   downloader_utils.py
   xhs_downloader.py
   tests/
     test_formatter.py
     test_parser.py
+    test_public_fetcher.py
     test_v2_download.py
 ```
 
@@ -218,6 +253,8 @@ python3 main.py --from-clipboard --use-local-chrome
 
 - 下载图片
 - `output.txt`
+- `public_fetch.html`
+- `public_fetch_debug.txt`
 - `debug_xhs_page.png`
 - `debug_xhs_page.html`
 
@@ -232,6 +269,7 @@ python3 main.py --from-clipboard --use-local-chrome
 
 - `https://www.xiaohongshu.com/explore/<note_id>?...`
 - `https://www.xiaohongshu.com/user/profile/<user_id>/<note_id>?...`
+- 小红书 App 分享文案中的 `http://xhslink.com/...`
 
 内部会统一规范化为标准 `explore/<note_id>` URL 后再进入下载流程。
 
@@ -273,6 +311,12 @@ python3 main.py --from-clipboard --use-local-chrome
   - 执行 `pip install -r requirements.txt`
 - `Playwright 浏览器未安装`
   - 执行 `playwright install chromium`
+- `免登录公开抓取失败：...`
+  - 这是公开 HTTP 抓取阶段失败，程序会自动回退到浏览器抓取
+- `公开抓取结果未通过质量判定：...`
+  - 说明拿到了 HTML，但标题 / 作者 / 图片不完整，或只抓到 `meta` 封面图等低质量结果
+- `公开抓取调试摘要：.../public_fetch_debug.txt`
+  - 打开该文件可查看最终 URL、提取方法、图片数量和质量判定原因
 - `本机 Chrome 未启动远程调试端口`
   - 先按 README 中命令启动带 `--remote-debugging-port` 的 Chrome
 - `无法连接本机 Chrome 远程调试端口`
@@ -282,7 +326,7 @@ python3 main.py --from-clipboard --use-local-chrome
 - `页面提取标题失败 / 页面提取作者失败 / 页面没有图片`
   - 页面结构变化，需要调整提取逻辑
 - `本次运行失败，调试文件保留在：...`
-  - 进入该临时目录，查看下载图片、`output.txt`、截图和 HTML
+  - 进入该临时目录，查看下载图片、`output.txt`、公开抓取 HTML、公开抓取摘要、浏览器截图和 HTML
 
 ## Testing
 
@@ -295,6 +339,9 @@ python3 -m unittest discover -s tests -v
 当前测试覆盖包括：
 
 - URL 校验与规范化
+- 结构化 URL 解析
+- 免登录公开抓取
+- 公开抓取结果质量判定
 - 下载文件名兼容现有 parser
 - 手动模式与剪贴板模式目录策略
 - 临时目录成功清理 / 失败保留

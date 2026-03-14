@@ -1,5 +1,10 @@
 # 小红书图片 OCR -> Apple Notes
 
+[![Release](https://img.shields.io/github/v/release/8334224/xiaohongshu-notes-ocr-macos)](https://github.com/8334224/xiaohongshu-notes-ocr-macos/releases/tag/v0.3.0)
+![Python](https://img.shields.io/badge/python-3-blue)
+![macOS](https://img.shields.io/badge/platform-macOS-black)
+![Strategy](https://img.shields.io/badge/download-public__fetch_%E2%86%92_browser-green)
+
 一个面向 macOS 的本地 Python 工具：  
 支持从小红书网页链接或本地图片提取正文，优先尝试免登录公开抓取，失败后自动回退到浏览器抓取，完成 OCR 后写入 Apple Notes 并导出纯文本。
 

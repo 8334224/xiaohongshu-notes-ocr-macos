@@ -1,34 +1,38 @@
 # 小红书图片 OCR -> Apple Notes
 
 一个面向 macOS 的本地 Python 工具：  
-支持从小红书网页链接自动下载图文笔记图片，或直接处理本地图片，完成 OCR 后自动写入 Apple Notes，并导出纯文本。
+支持从小红书网页链接或本地图片提取正文，优先尝试免登录公开抓取，失败后自动回退到浏览器抓取，完成 OCR 后写入 Apple Notes 并导出纯文本。
 
 ## Overview
 
-这个项目解决的是一个非常具体的个人工作流：
+这个项目解决的是一个非常具体的 macOS 本地工作流：
 
-1. 从小红书拿到一篇图文笔记
-2. 提取正文图片
-3. 使用 macOS Vision OCR 识别文字
-4. 做轻量文本清洗
-5. 自动归档到 Apple Notes
-6. 同步导出纯文本，方便检索、朗读和后续整理
+1. 从小红书拿到一篇图文笔记链接，或手动准备一组图片
+2. 先尝试免登录公开抓取正文图片
+3. 如果公开抓取失败或结果不足，自动回退到浏览器提取
+4. 使用 macOS Vision OCR 识别图片文字
+5. 做轻量文本清洗
+6. 自动归档到 Apple Notes，并导出纯文本
 
-重点不是做通用爬虫，而是尽量稳定地跑通个人高频使用场景。
+重点不是做通用爬虫，而是尽量稳定地跑通个人高频使用场景。  
+当前实现里，`--use-local-chrome` 是更强的浏览器兜底，不是第一优先级。
 
 ## Features
 
 - 支持两种输入模式：
   - 本地图片目录模式
   - 剪贴板链接模式
-- 支持两种小红书笔记 URL 形态：
+- 支持多种小红书笔记 URL 形态与分享文案提取：
   - `/explore/<note_id>`
+  - `/discovery/item/<note_id>`
+  - `/discovery/note/<note_id>`
   - `/user/profile/<user_id>/<note_id>`
-- 支持从分享文案中提取 URL，并支持 `xhslink.com` 短链展开
+- 支持 `xhslink.com` 短链
+- 支持从混合分享文案中自动提取链接
 - URL 会先规范化，再进入统一下载流程
 - 下载策略为“免登录公开抓取优先，浏览器兜底”
-- 支持 Playwright 默认 Chromium 抓取
-- 支持复用本机已登录 Chrome 会话（CDP），作为更强的浏览器兜底
+- 公开抓取失败或结果不足时，自动回退到 Playwright 浏览器抓取
+- 可选复用本机已登录 Chrome 会话（CDP），作为更强的浏览器兜底
 - 自动下载正文图片并按页码命名
 - 使用 macOS Vision OCR 识别中英文混排文本
 - 自动写入 Apple Notes
@@ -55,7 +59,7 @@ python3 main.py
 
 ### 2. 剪贴板链接模式
 
-从系统剪贴板读取小红书图文笔记链接，自动下载正文图片并进入 OCR：
+从系统剪贴板读取小红书图文笔记链接，先尝试免登录公开抓取，失败后自动回退到浏览器抓取，再进入 OCR：
 
 ```bash
 python3 main.py --from-clipboard
@@ -63,7 +67,7 @@ python3 main.py --from-clipboard
 
 ### 3. 剪贴板 + 本机已登录 Chrome
 
-复用本机已登录的小红书会话，适合默认 Playwright Chromium 打开后落到登录门槛页的情况：
+在“公开抓取优先”的基础上，进一步允许浏览器兜底阶段复用本机已登录的小红书会话。适合默认 `playwright` 打开后落到登录门槛页的情况：
 
 ```bash
 python3 main.py --from-clipboard --use-local-chrome
@@ -106,15 +110,16 @@ Export output.txt
 当前链接下载模式的优先级是：
 
 1. 先把剪贴板文本解析成结构化小红书 URL
-2. 先尝试免登录公开抓取 HTML
-3. 如果公开抓取拿到完整结果，则直接下载正文图片
-4. 如果公开抓取失败，或结果质量不足，则回退到浏览器抓取
-5. 如果启用了 `--use-local-chrome`，浏览器兜底阶段会继续复用本机已登录 Chrome
+2. 先尝试 `public_fetch` 免登录公开抓取 HTML
+3. 如果 `public_fetch` 拿到完整结果，则直接下载正文图片
+4. 如果 `public_fetch` 失败，或结果质量不足，则回退到 `playwright`
+5. 如果启用了 `--use-local-chrome`，浏览器兜底阶段会继续复用本机已登录 Chrome，也就是 `local_chrome`
 
 注意：
 
 - 并不是所有小红书笔记都能通过免登录公开抓取拿到完整结果
 - 遇到公开抓取失败、质量不足、登录门槛或风控页面时，程序会自动回退到浏览器方案
+- `--use-local-chrome` 只影响浏览器兜底阶段，不会跳过公开抓取优先策略
 
 这里的“公开抓取结果质量不足”目前至少包括：
 
@@ -142,6 +147,7 @@ project/
   xhs_public_fetcher.py
   downloader_utils.py
   xhs_downloader.py
+  run_xhs_ocr.command
   tests/
     test_formatter.py
     test_parser.py
@@ -203,12 +209,18 @@ python3 main.py
 
 ### 剪贴板链接模式
 
-1. 在浏览器地址栏复制一条小红书图文笔记链接
+1. 在浏览器地址栏或分享文案中复制一条小红书图文笔记链接
 2. 运行：
 
 ```bash
 python3 main.py --from-clipboard
 ```
+
+默认行为：
+
+- 先做 URL 解析与规范化
+- 先尝试 `public_fetch`
+- 如失败或结果不足，再自动回退到 `playwright`
 
 ### 剪贴板 + 本机 Chrome 模式
 
@@ -255,6 +267,7 @@ python3 main.py --from-clipboard --use-local-chrome
 - `output.txt`
 - `public_fetch.html`
 - `public_fetch_debug.txt`
+- `public_fetch_debug.json`
 - `debug_xhs_page.png`
 - `debug_xhs_page.html`
 
@@ -268,8 +281,11 @@ python3 main.py --from-clipboard --use-local-chrome
 当前支持：
 
 - `https://www.xiaohongshu.com/explore/<note_id>?...`
+- `https://www.xiaohongshu.com/discovery/item/<note_id>?...`
+- `https://www.xiaohongshu.com/discovery/note/<note_id>?...`
 - `https://www.xiaohongshu.com/user/profile/<user_id>/<note_id>?...`
 - 小红书 App 分享文案中的 `http://xhslink.com/...`
+- 混合分享文案中自动提取出的 URL
 
 内部会统一规范化为标准 `explore/<note_id>` URL 后再进入下载流程。
 
@@ -297,7 +313,7 @@ python3 main.py --from-clipboard --use-local-chrome
 - 不保留页码标记
 - 多页正文会按正文顺序连续拼接
 
-## Troubleshooting
+## Debug & Troubleshooting
 
 - `剪贴板为空`
   - 先复制一条小红书笔记 URL
@@ -311,12 +327,16 @@ python3 main.py --from-clipboard --use-local-chrome
   - 执行 `pip install -r requirements.txt`
 - `Playwright 浏览器未安装`
   - 执行 `playwright install chromium`
-- `免登录公开抓取失败：...`
-  - 这是公开 HTTP 抓取阶段失败，程序会自动回退到浏览器抓取
+- `抓取策略：public_fetch 未成功：...`
+  - 这是 `public_fetch` 阶段失败，程序会自动回退到 `playwright` 或 `local_chrome`
 - `公开抓取结果未通过质量判定：...`
   - 说明拿到了 HTML，但标题 / 作者 / 图片不完整，或只抓到 `meta` 封面图等低质量结果
 - `公开抓取调试摘要：.../public_fetch_debug.txt`
-  - 打开该文件可查看最终 URL、提取方法、图片数量和质量判定原因
+  - 打开该文件可查看最终 URL、提取方法、图片数量、质量判定原因和最终下载策略
+- `.../public_fetch_debug.json`
+  - 这是 `public_fetch` 阶段的结构化调试摘要，适合程序化排查
+- `公开抓取 HTML 已保存：.../public_fetch.html`
+  - 这是免登录公开抓取阶段拿到的原始 HTML，适合排查为什么质量判定未通过
 - `本机 Chrome 未启动远程调试端口`
   - 先按 README 中命令启动带 `--remote-debugging-port` 的 Chrome
 - `无法连接本机 Chrome 远程调试端口`
@@ -326,7 +346,7 @@ python3 main.py --from-clipboard --use-local-chrome
 - `页面提取标题失败 / 页面提取作者失败 / 页面没有图片`
   - 页面结构变化，需要调整提取逻辑
 - `本次运行失败，调试文件保留在：...`
-  - 进入该临时目录，查看下载图片、`output.txt`、公开抓取 HTML、公开抓取摘要、浏览器截图和 HTML
+  - 进入该临时目录，查看下载图片、`output.txt`、`public_fetch` HTML / TXT / JSON 摘要，以及浏览器截图和 HTML
 
 ## Testing
 

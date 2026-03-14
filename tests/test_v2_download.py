@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import shutil
 from tempfile import TemporaryDirectory
 import unittest
@@ -434,13 +435,27 @@ class ClipboardAndDownloadTests(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             downloader = XiaohongshuDownloader(debug_folder=Path(temp_dir))
             debug_path = Path(temp_dir) / "public_fetch_debug.txt"
+            debug_json_path = Path(temp_dir) / "public_fetch_debug.json"
 
-            downloader._write_public_fetch_failure_debug(debug_path, parsed, "public blocked")
+            downloader._write_public_fetch_failure_debug(
+                debug_path,
+                debug_json_path,
+                parsed,
+                "public blocked",
+                download_strategy_used="playwright",
+            )
 
             content = debug_path.read_text(encoding="utf-8")
             self.assertIn("canonical_url: https://www.xiaohongshu.com/explore/abc123", content)
-            self.assertIn("quality_passed: false", content)
-            self.assertIn("quality_reasons: public blocked", content)
+            self.assertIn("quality_ok: false", content)
+            self.assertIn("quality_reason: public blocked", content)
+            self.assertIn("download_strategy_used: playwright", content)
+
+            payload = json.loads(debug_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["canonical_url"], "https://www.xiaohongshu.com/explore/abc123")
+            self.assertFalse(payload["quality_ok"])
+            self.assertEqual(payload["quality_reason"], "public blocked")
+            self.assertEqual(payload["download_strategy_used"], "playwright")
 
     @patch.object(XiaohongshuDownloader, "download_from_parsed_url")
     @patch("xhs_downloader.parse_xhs_url")

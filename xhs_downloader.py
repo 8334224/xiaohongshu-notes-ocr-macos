@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,11 +102,13 @@ class XiaohongshuDownloader:
         """Try public no-login extraction first, then fall back to browser extraction."""
         public_debug_path = self.debug_folder / "public_fetch.html"
         public_debug_summary_path = self.debug_folder / "public_fetch_debug.txt"
-        print("抓取路径：先尝试免登录公开抓取")
+        public_debug_json_path = self.debug_folder / "public_fetch_debug.json"
+        fallback_strategy = self._fallback_strategy_name()
+        print("抓取策略：public_fetch 优先")
         try:
             public_result = fetch_public_note(parsed_url, html_output_path=public_debug_path)
             print(
-                "公开抓取结果："
+                "public_fetch 结果："
                 f"final_url={public_result.final_url}, "
                 f"method={public_result.extraction_method or 'none'}, "
                 f"title={bool(public_result.title)}, "
@@ -116,10 +119,18 @@ class XiaohongshuDownloader:
                 print(f"公开抓取 HTML 已保存：{public_result.html_path}")
 
             is_usable, reasons = self._is_public_fetch_usable(public_result)
-            self._write_public_fetch_debug(public_debug_summary_path, parsed_url, public_result, reasons=reasons)
+            strategy_used = "public_fetch" if is_usable else fallback_strategy
+            self._write_public_fetch_debug(
+                public_debug_summary_path,
+                public_debug_json_path,
+                parsed_url,
+                public_result,
+                reasons=reasons,
+                download_strategy_used=strategy_used,
+            )
             if is_usable:
                 print(
-                    "抓取路径：免登录公开抓取成功"
+                    "抓取策略：public_fetch 成功："
                     f"{len(public_result.image_urls)} 张图，method={public_result.extraction_method or 'unknown'}"
                 )
                 return ExtractedNote(
@@ -131,11 +142,21 @@ class XiaohongshuDownloader:
             raise AppError(f"公开抓取结果未通过质量判定：{'; '.join(reasons)}")
         except AppError as exc:
             if not public_debug_summary_path.exists():
-                self._write_public_fetch_failure_debug(public_debug_summary_path, parsed_url, str(exc))
-            print(f"抓取路径：免登录公开抓取未成功：{exc}")
+                self._write_public_fetch_failure_debug(
+                    public_debug_summary_path,
+                    public_debug_json_path,
+                    parsed_url,
+                    str(exc),
+                    download_strategy_used=fallback_strategy,
+                )
+            print(f"抓取策略：public_fetch 未成功：{exc}")
             print(f"公开抓取调试摘要：{public_debug_summary_path}")
-            print("抓取路径：开始回退到浏览器抓取")
+            print(f"抓取策略：回退到 {fallback_strategy}")
             return self._extract_note(parsed_url.canonical_url)
+
+    def _fallback_strategy_name(self) -> str:
+        """Return the concrete browser fallback strategy name."""
+        return "local_chrome" if self.use_local_chrome else "playwright"
 
     @staticmethod
     def _is_public_fetch_usable(public_result) -> tuple[bool, list[str]]:
@@ -160,45 +181,104 @@ class XiaohongshuDownloader:
             reasons.append("仅抓到 meta 封面图，结果可信度不足")
         return not reasons, reasons
 
-    def _write_public_fetch_debug(self, path: Path, parsed_url: ParsedXhsUrl, public_result, reasons: list[str]) -> None:
+    def _write_public_fetch_debug(
+        self,
+        text_path: Path,
+        json_path: Path,
+        parsed_url: ParsedXhsUrl,
+        public_result,
+        reasons: list[str],
+        download_strategy_used: str,
+    ) -> None:
         """Write a small debug summary for the public fetch attempt."""
         try:
             self._ensure_debug_folder()
+            debug_payload = {
+                "original_input": parsed_url.original_input,
+                "canonical_url": parsed_url.canonical_url,
+                "final_url": public_result.final_url,
+                "note_id": parsed_url.note_id,
+                "xsec_token_present": bool(parsed_url.xsec_token),
+                "xsec_source": parsed_url.xsec_source or "",
+                "share_link_host": parsed_url.share_link_host or "",
+                "title": public_result.title or "",
+                "author": public_result.author or "",
+                "image_count": len(public_result.image_urls),
+                "extraction_method": public_result.extraction_method or "",
+                "html_path": public_result.html_path or "",
+                "quality_ok": not reasons,
+                "quality_reason": "; ".join(reasons),
+                "download_strategy_used": download_strategy_used,
+            }
             lines = [
-                f"original_input: {parsed_url.original_input}",
-                f"canonical_url: {parsed_url.canonical_url}",
-                f"final_url: {public_result.final_url}",
-                f"note_id: {parsed_url.note_id}",
-                f"xsec_token: {parsed_url.xsec_token or ''}",
-                f"xsec_source: {parsed_url.xsec_source or ''}",
-                f"share_link_host: {parsed_url.share_link_host or ''}",
-                f"title: {public_result.title or ''}",
-                f"author: {public_result.author or ''}",
-                f"image_count: {len(public_result.image_urls)}",
-                f"extraction_method: {public_result.extraction_method or ''}",
-                f"html_path: {public_result.html_path or ''}",
-                f"quality_passed: {str(not reasons).lower()}",
-                f"quality_reasons: {'; '.join(reasons)}",
+                f"original_input: {debug_payload['original_input']}",
+                f"canonical_url: {debug_payload['canonical_url']}",
+                f"final_url: {debug_payload['final_url']}",
+                f"note_id: {debug_payload['note_id']}",
+                f"xsec_token_present: {str(debug_payload['xsec_token_present']).lower()}",
+                f"xsec_source: {debug_payload['xsec_source']}",
+                f"share_link_host: {debug_payload['share_link_host']}",
+                f"title: {debug_payload['title']}",
+                f"author: {debug_payload['author']}",
+                f"image_count: {debug_payload['image_count']}",
+                f"extraction_method: {debug_payload['extraction_method']}",
+                f"html_path: {debug_payload['html_path']}",
+                f"quality_ok: {str(debug_payload['quality_ok']).lower()}",
+                f"quality_reason: {debug_payload['quality_reason']}",
+                f"download_strategy_used: {debug_payload['download_strategy_used']}",
             ]
-            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            text_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            json_path.write_text(json.dumps(debug_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         except Exception:  # pragma: no cover
             return
 
-    def _write_public_fetch_failure_debug(self, path: Path, parsed_url: ParsedXhsUrl, error_message: str) -> None:
+    def _write_public_fetch_failure_debug(
+        self,
+        text_path: Path,
+        json_path: Path,
+        parsed_url: ParsedXhsUrl,
+        error_message: str,
+        download_strategy_used: str,
+    ) -> None:
         """Write a debug summary when public fetching fails before producing a result."""
         try:
             self._ensure_debug_folder()
+            debug_payload = {
+                "original_input": parsed_url.original_input,
+                "canonical_url": parsed_url.canonical_url,
+                "final_url": "",
+                "note_id": parsed_url.note_id,
+                "xsec_token_present": bool(parsed_url.xsec_token),
+                "xsec_source": parsed_url.xsec_source or "",
+                "share_link_host": parsed_url.share_link_host or "",
+                "title": "",
+                "author": "",
+                "image_count": 0,
+                "extraction_method": "",
+                "html_path": "",
+                "quality_ok": False,
+                "quality_reason": error_message,
+                "download_strategy_used": download_strategy_used,
+            }
             lines = [
-                f"original_input: {parsed_url.original_input}",
-                f"canonical_url: {parsed_url.canonical_url}",
-                f"note_id: {parsed_url.note_id}",
-                f"xsec_token: {parsed_url.xsec_token or ''}",
-                f"xsec_source: {parsed_url.xsec_source or ''}",
-                f"share_link_host: {parsed_url.share_link_host or ''}",
-                "quality_passed: false",
-                f"quality_reasons: {error_message}",
+                f"original_input: {debug_payload['original_input']}",
+                f"canonical_url: {debug_payload['canonical_url']}",
+                f"final_url: {debug_payload['final_url']}",
+                f"note_id: {debug_payload['note_id']}",
+                f"xsec_token_present: {str(debug_payload['xsec_token_present']).lower()}",
+                f"xsec_source: {debug_payload['xsec_source']}",
+                f"share_link_host: {debug_payload['share_link_host']}",
+                f"title: {debug_payload['title']}",
+                f"author: {debug_payload['author']}",
+                f"image_count: {debug_payload['image_count']}",
+                f"extraction_method: {debug_payload['extraction_method']}",
+                f"html_path: {debug_payload['html_path']}",
+                f"quality_ok: {str(debug_payload['quality_ok']).lower()}",
+                f"quality_reason: {debug_payload['quality_reason']}",
+                f"download_strategy_used: {debug_payload['download_strategy_used']}",
             ]
-            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            text_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            json_path.write_text(json.dumps(debug_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         except Exception:  # pragma: no cover
             return
 

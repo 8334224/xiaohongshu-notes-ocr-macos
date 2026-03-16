@@ -17,11 +17,12 @@ from config import (
     PLAYWRIGHT_WAIT_AFTER_LOAD_MS,
 )
 from downloader_utils import build_download_filename, cleanup_ocr_image_files, ensure_ocr_folder
-from utils import AppError, clean_note_text
+from utils import AppError, clean_note_text, normalize_note_title
 from xhs_public_fetcher import fetch_public_note
 from xhs_url_validator import ParsedXhsUrl, parse_xhs_url
 
 IMAGE_URL_PATTERN = re.compile(r"https?://[^\s\"']+\.(?:jpg|jpeg|png|webp)(?:\?[^\s\"']*)?", re.IGNORECASE)
+UNTITLED_DOWNLOAD_TITLE = "无标题笔记"
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,9 @@ class ExtractedNote:
 
     title: str
     author: str
+    display_title: str | None
     note_text: str | None
+    note_type: str
     image_urls: list[str]
 
 
@@ -39,7 +42,10 @@ class DownloadResult:
     """Downloaded image paths and the optional extracted note text."""
 
     paths: list[Path]
+    note_title: str | None
+    note_author: str | None
     note_text: str | None
+    note_type: str
 
 
 @dataclass(frozen=True)
@@ -98,8 +104,40 @@ class XiaohongshuDownloader:
             print(f"已清理 OCR 目录中的旧图片：{len(removed)} 张")
 
         note = self._extract_note_with_fallback(parsed_url)
+        print(
+            "提取结果："
+            f"note_type={note.note_type}, "
+            f"title={note.display_title or ''}, "
+            f"author={note.author or ''}, "
+            f"image_url_count={len(note.image_urls)}, "
+            f"has_note_text={bool((note.note_text or '').strip())}"
+        )
+        print(f"准备按 {note.note_type} 模式处理")
+        if note.note_type == "video":
+            if note.image_urls:
+                print("提示：检测到视频笔记，存在封面图 URL，但已跳过图片下载和 OCR。")
+            print("提示：检测到纯视频笔记，已跳过图片下载和 OCR，仅提取正文内容。")
+            return DownloadResult(
+                paths=[],
+                note_title=note.display_title,
+                note_author=note.author,
+                note_text=note.note_text,
+                note_type=note.note_type,
+            )
+        if note.note_type == "unknown" and not note.image_urls:
+            print("提示：笔记类型未明确，且未检测到图片组，已按正文优先处理。")
+            return DownloadResult(
+                paths=[],
+                note_title=note.display_title,
+                note_author=note.author,
+                note_text=note.note_text,
+                note_type=note.note_type,
+            )
         if not note.image_urls:
             raise AppError("页面没有可下载的图片。")
+
+        if note.note_type == "video":
+            raise AppError("逻辑错误：video 分支不应进入图片下载。")
 
         downloaded_paths: list[Path] = []
         for index, image_url in enumerate(note.image_urls, start=1):
@@ -113,7 +151,13 @@ class XiaohongshuDownloader:
         if not downloaded_paths:
             raise AppError("下载后图片数量为 0，任务已终止。")
 
-        return DownloadResult(paths=downloaded_paths, note_text=note.note_text)
+        return DownloadResult(
+            paths=downloaded_paths,
+            note_title=note.display_title,
+            note_author=note.author,
+            note_text=note.note_text,
+            note_type=note.note_type,
+        )
 
     def _extract_note_with_fallback(self, parsed_url: ParsedXhsUrl) -> ExtractedNote:
         """Try public no-login extraction first, then fall back to browser extraction."""
@@ -128,6 +172,7 @@ class XiaohongshuDownloader:
                 "public_fetch 结果："
                 f"final_url={public_result.final_url}, "
                 f"method={public_result.extraction_method or 'none'}, "
+                f"note_type={public_result.note_type}, "
                 f"title={bool(public_result.title)}, "
                 f"author={bool(public_result.author)}, "
                 f"images={len(public_result.image_urls)}"
@@ -150,10 +195,13 @@ class XiaohongshuDownloader:
                     "抓取策略：public_fetch 成功："
                     f"{len(public_result.image_urls)} 张图，method={public_result.extraction_method or 'unknown'}"
                 )
+                display_title = normalize_note_title(public_result.title, public_result.author)
                 return ExtractedNote(
-                    title=public_result.title,
+                    title=display_title or UNTITLED_DOWNLOAD_TITLE,
                     author=public_result.author,
+                    display_title=display_title,
                     note_text=public_result.note_text,
+                    note_type=public_result.note_type,
                     image_urls=public_result.image_urls,
                 )
 
@@ -183,6 +231,12 @@ class XiaohongshuDownloader:
         final_host = urlparse(public_result.final_url).netloc.lower()
         if not final_host.endswith("xiaohongshu.com"):
             reasons.append("final_url 不是小红书域名")
+        if public_result.note_type == "video":
+            if not public_result.note_text:
+                reasons.append("视频笔记缺少正文")
+            if not public_result.author:
+                reasons.append("缺少作者")
+            return not reasons, reasons
         if not public_result.title:
             reasons.append("缺少标题")
         elif public_result.title in {"小红书 - 你的生活兴趣社区", "安全限制"}:
@@ -221,6 +275,7 @@ class XiaohongshuDownloader:
                 "share_link_host": parsed_url.share_link_host or "",
                 "title": public_result.title or "",
                 "author": public_result.author or "",
+                "note_type": public_result.note_type,
                 "image_count": len(public_result.image_urls),
                 "extraction_method": public_result.extraction_method or "",
                 "html_path": public_result.html_path or "",
@@ -238,6 +293,7 @@ class XiaohongshuDownloader:
                 f"share_link_host: {debug_payload['share_link_host']}",
                 f"title: {debug_payload['title']}",
                 f"author: {debug_payload['author']}",
+                f"note_type: {debug_payload['note_type']}",
                 f"image_count: {debug_payload['image_count']}",
                 f"extraction_method: {debug_payload['extraction_method']}",
                 f"html_path: {debug_payload['html_path']}",
@@ -271,6 +327,7 @@ class XiaohongshuDownloader:
                 "share_link_host": parsed_url.share_link_host or "",
                 "title": "",
                 "author": "",
+                "note_type": "",
                 "image_count": 0,
                 "extraction_method": "",
                 "html_path": "",
@@ -288,6 +345,7 @@ class XiaohongshuDownloader:
                 f"share_link_host: {debug_payload['share_link_host']}",
                 f"title: {debug_payload['title']}",
                 f"author: {debug_payload['author']}",
+                f"note_type: {debug_payload['note_type']}",
                 f"image_count: {debug_payload['image_count']}",
                 f"extraction_method: {debug_payload['extraction_method']}",
                 f"html_path: {debug_payload['html_path']}",
@@ -313,19 +371,32 @@ class XiaohongshuDownloader:
 
         try:
             with sync_playwright() as playwright:
-                browser, page, should_close_browser = self._open_browser_page(playwright, url)
+                browser, page, should_close_browser, browser_mode = self._open_browser_page(playwright, url)
                 html = ""
                 page_text = ""
+                note_type = "unknown"
                 try:
-                    print("正在打开页面...")
+                    print("提示：已创建页面对象")
+                    print("提示：开始打开目标页面")
                     if page.url != url:
-                        page.goto(url, wait_until="domcontentloaded", timeout=PLAYWRIGHT_TIMEOUT_MS)
+                        try:
+                            page.goto(url, wait_until="domcontentloaded", timeout=PLAYWRIGHT_TIMEOUT_MS)
+                        except PlaywrightTimeoutError as exc:
+                            raise AppError("页面已创建，但打开目标链接失败：超时。") from exc
+                        except PlaywrightError as exc:
+                            raise AppError(f"页面已创建，但打开目标链接失败：{exc}") from exc
+                    print("提示：页面打开成功，开始提取内容")
                     page.wait_for_timeout(PLAYWRIGHT_WAIT_AFTER_LOAD_MS)
                     self._scroll_page(page)
                     page.wait_for_timeout(500)
-                    extracted = page.evaluate(EXTRACTION_SCRIPT)
-                    html = page.content()
-                    page_text = page.locator("body").inner_text(timeout=5000)
+                    try:
+                        extracted = page.evaluate(EXTRACTION_SCRIPT)
+                        html = page.content()
+                        page_text = page.locator("body").inner_text(timeout=5000)
+                    except PlaywrightTimeoutError as exc:
+                        raise AppError("页面已打开，但正文提取脚本执行失败：超时。") from exc
+                    except PlaywrightError as exc:
+                        raise AppError(f"页面已打开，但正文提取脚本执行失败：{exc}") from exc
                     print(f"信号判定前 page.url：{page.url}")
                     print(f"信号判定前 page_text 长度：{len(page_text)}")
                     print(f"信号判定前是否成功拿到 HTML：{bool(html)}")
@@ -339,15 +410,11 @@ class XiaohongshuDownloader:
                         self._save_debug_artifacts(page, html)
                         raise AppError(error_message)
 
-                    title = str(extracted.get("title", "")).strip()
-                    if not title:
-                        self._save_debug_artifacts(page, html)
-                        raise AppError("页面提取标题失败。")
-
-                    author = str(extracted.get("author", "")).strip()
+                    author = str(extracted.get("author", "")).strip() or self._extract_author_from_html(html)
                     if not author:
                         self._save_debug_artifacts(page, html)
                         raise AppError("页面提取作者失败。")
+                    title = normalize_note_title(str(extracted.get("title", "")).strip(), author)
 
                     image_candidates = self._collect_image_candidates(extracted, html)
                     image_selection = self._select_image_source(image_candidates, verbose=True)
@@ -356,8 +423,13 @@ class XiaohongshuDownloader:
                     print(f"采用来源：{image_selection.source_type}")
                     if image_selection.source_type == "generic_img":
                         print("使用了低可信度兜底提取：generic_img")
+                    note_type = self._detect_note_type(extracted, html, image_selection.urls)
+                    if note_type == "image":
+                        pager_text = self._extract_pager_text(html)
+                        if pager_text:
+                            print(f"提示：检测到多图图文笔记（{pager_text}），按 image 模式处理。")
                     image_urls = image_selection.urls
-                    if not image_urls:
+                    if not image_urls and note_type != "video":
                         self._save_debug_artifacts(page, html)
                         raise AppError("页面没有图片，或当前版本未抓到图文图片。")
                 except AppError:
@@ -374,14 +446,46 @@ class XiaohongshuDownloader:
             message = str(exc)
             if "Executable doesn't exist" in message:
                 raise AppError("Playwright 浏览器未安装。请执行 `playwright install chromium`。") from exc
-            if self.use_local_chrome:
-                raise AppError(
-                    "无法连接本机 Chrome 远程调试端口。请确认 Chrome 已按 README 启动，并开放了对应 CDP 端口。"
-                ) from exc
-            raise AppError(f"页面打开失败：{message}") from exc
+            raise AppError(f"浏览器初始化失败：{message}") from exc
 
-        note_text = self._extract_note_text(extracted, title)
-        return ExtractedNote(title=title, author=author, note_text=note_text, image_urls=image_urls)
+        note_text = self._extract_note_text(extracted, title or "")
+        return ExtractedNote(
+            title=title or UNTITLED_DOWNLOAD_TITLE,
+            author=author,
+            display_title=title,
+            note_text=note_text,
+            note_type=note_type,
+            image_urls=image_urls,
+        )
+
+    @staticmethod
+    def _extract_author_from_html(html: str) -> str:
+        """Extract author conservatively from HTML when DOM extraction misses it."""
+        meta_match = re.search(
+            r'<meta\b[^>]+(?:property|name)=["\'](?:author|og:article:author)["\'][^>]+content=["\']([^"\']+)["\']',
+            html,
+            re.IGNORECASE,
+        )
+        if meta_match:
+            return meta_match.group(1).strip()
+
+        link_match = re.search(
+            r'<a[^>]+href=["\'][^"\']*/user/profile/[^"\']+["\'][^>]*>(.*?)</a>',
+            html,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if link_match:
+            linked_author = re.sub(r"<[^>]+>", "", link_match.group(1)).strip()
+            if linked_author:
+                return linked_author
+
+        for field in ("author", "nickname", "nickName", "displayName", "userName", "username", "name"):
+            match = re.search(rf'"{field}"\s*:\s*"([^"]+)"', html, re.IGNORECASE)
+            if match:
+                value = match.group(1).replace("\\u002F", "/").strip()
+                if value:
+                    return value
+        return ""
 
     @staticmethod
     def _extract_note_text(extracted: dict[str, object], title: str) -> str | None:
@@ -395,57 +499,154 @@ class XiaohongshuDownloader:
             return None
         return cleaned or None
 
+    @staticmethod
+    def _detect_note_type(extracted: dict[str, object], html: str, image_urls: list[str]) -> str:
+        """Detect whether the note is an image post, video post, or unknown."""
+        extracted_note_type = str(extracted.get("noteType", "")).strip().lower()
+        has_image_group_signal = XiaohongshuDownloader._has_image_group_signal(html, image_urls)
+        has_video_signal = XiaohongshuDownloader._has_video_signal(extracted, html)
+        if has_video_signal and len(image_urls) <= 1 and extracted_note_type != "image":
+            return "video"
+        if extracted_note_type == "video" and not has_image_group_signal:
+            return "video"
+        if has_video_signal and not has_image_group_signal:
+            return "video"
+        if extracted_note_type == "image" and has_image_group_signal:
+            return "image"
+        if has_image_group_signal:
+            return "image"
+        if has_video_signal and len(image_urls) <= 1:
+            return "video"
+        return "unknown"
+
+    @staticmethod
+    def _has_image_group_signal(html: str, image_urls: list[str]) -> bool:
+        """Return whether the note has strong image-gallery signals."""
+        if len(image_urls) >= 2:
+            return True
+        pager_match = re.search(r"(?<!\d)(\d{1,2})\s*/\s*(\d{1,2})(?!\d)", html)
+        if pager_match and int(pager_match.group(2)) > 1 and len(image_urls) >= 2:
+            return True
+        return False
+
+    @staticmethod
+    def _has_video_signal(extracted: dict[str, object], html: str) -> bool:
+        """Return whether the current note has strong video-note signals."""
+        if str(extracted.get("noteType", "")).strip().lower() == "video":
+            return True
+        if re.search(r"<video\b", html, re.IGNORECASE):
+            return True
+        if re.search(r'"(?:noteType|postType)"\s*:\s*"video"', html, re.IGNORECASE):
+            return True
+        if re.search(r'"videoInfo"\s*:\s*\{[^}]*"(?:masterUrl|h264Url|media)"', html, re.IGNORECASE):
+            return True
+        if re.search(r'"(?:videoUrl|masterUrl|h264Url)"\s*:\s*"https?://', html, re.IGNORECASE):
+            return True
+        return False
+
+    @staticmethod
+    def _extract_pager_text(html: str) -> str | None:
+        """Extract a visible image pager like 1/13 for debug logging."""
+        match = re.search(r"(?<!\d)(\d{1,2}\s*/\s*\d{1,2})(?!\d)", html)
+        return match.group(1).replace(" ", "") if match else None
+
     def _open_browser_page(self, playwright, target_url: str):
         """Open a page either in Playwright Chromium or in a local Chrome CDP session."""
         if self.use_local_chrome:
-            print(f"正在连接本机 Chrome：{self.chrome_cdp_url}")
-            browser = playwright.chromium.connect_over_cdp(self.chrome_cdp_url)
-            contexts = browser.contexts
-            print(f"已连接后获取到 {len(contexts)} 个 browser contexts")
-            if not contexts:
-                raise AppError("已连接本机 Chrome，但没有可用的浏览器上下文。")
+            print(f"提示：尝试连接本机 Chrome CDP 端口 {self.chrome_cdp_url}")
+            try:
+                return self._open_local_chrome_page(playwright, target_url)
+            except AppError as exc:
+                print(f"提示：CDP 连接失败，回退为自动启动浏览器。原因：{exc}")
+                try:
+                    browser, page, should_close_browser = self._launch_browser_page(playwright, headless=False)
+                except AppError as fallback_exc:
+                    if str(fallback_exc).startswith("自动启动浏览器失败"):
+                        raise AppError("无法连接本机 Chrome 远程调试端口，且自动启动浏览器失败。") from fallback_exc
+                    raise
+                print("提示：自动启动浏览器成功")
+                return browser, page, should_close_browser, "playwright_fallback"
 
-            selected_context = None
-            selected_page = None
-            target_host = urlparse(target_url).netloc.lower()
-            target_path = urlparse(target_url).path
+        browser, page, should_close_browser = self._launch_browser_page(playwright, headless=True)
+        return browser, page, should_close_browser, "playwright"
 
-            for context_index, context in enumerate(contexts, start=1):
-                pages = context.pages
-                print(f"context[{context_index}] 中有 {len(pages)} 个 pages")
-                for page_index, page in enumerate(pages, start=1):
-                    print(f"  page[{page_index}] URL: {page.url}")
-                    page_url = page.url.lower()
-                    if target_host in page_url and target_path in page.url:
-                        selected_context = context
-                        selected_page = page
-                        break
-                    if selected_context is None and target_host in page_url:
-                        selected_context = context
-                        selected_page = page
-                if selected_page is not None:
-                    break
-
-            if selected_page is None:
-                selected_context = contexts[0]
-                selected_page = selected_context.new_page()
-                print("已有 pages 中未找到目标小红书页面，已在现有 context 中新开 page。")
-
-            print(f"最终选中的 page URL：{selected_page.url or 'about:blank'}")
-            return browser, selected_page, False
-
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1440, "height": 900},
-            locale="zh-CN",
-        )
-        page = context.new_page()
+    def _launch_browser_page(self, playwright, headless: bool):
+        """Launch a Playwright browser and create a usable page."""
+        try:
+            browser = playwright.chromium.launch(headless=headless)
+        except Exception as exc:
+            raise AppError(f"自动启动浏览器失败：{exc}") from exc
+        try:
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1440, "height": 900},
+                locale="zh-CN",
+            )
+        except Exception as exc:
+            try:
+                browser.close()
+            except Exception:
+                pass
+            raise AppError("已启动浏览器，但创建上下文失败。") from exc
+        try:
+            page = context.new_page()
+        except Exception as exc:
+            try:
+                browser.close()
+            except Exception:
+                pass
+            raise AppError("自动启动浏览器成功，但未能获取可用 page。") from exc
         return browser, page, True
+
+    def _open_local_chrome_page(self, playwright, target_url: str):
+        """Connect to a local Chrome CDP instance and reuse an existing page when possible."""
+        try:
+            browser = playwright.chromium.connect_over_cdp(self.chrome_cdp_url)
+        except Exception as exc:
+            raise AppError(f"无法连接本机 Chrome 远程调试端口：{exc}") from exc
+        contexts = browser.contexts
+        print(f"已连接后获取到 {len(contexts)} 个 browser contexts")
+        if not contexts:
+            raise AppError("已连接本机 Chrome，但没有可用的浏览器上下文。")
+
+        selected_context = None
+        selected_page = None
+        target_host = urlparse(target_url).netloc.lower()
+        target_path = urlparse(target_url).path
+
+        for context_index, context in enumerate(contexts, start=1):
+            pages = context.pages
+            print(f"context[{context_index}] 中有 {len(pages)} 个 pages")
+            for page_index, page in enumerate(pages, start=1):
+                print(f"  page[{page_index}] URL: {page.url}")
+                page_url = page.url.lower()
+                if target_host in page_url and target_path in page.url:
+                    selected_context = context
+                    selected_page = page
+                    break
+                if selected_context is None and target_host in page_url:
+                    selected_context = context
+                    selected_page = page
+            if selected_page is not None:
+                break
+
+        if selected_page is None:
+            selected_context = contexts[0]
+            try:
+                selected_page = selected_context.new_page()
+            except Exception as exc:
+                raise AppError("已连接本机 Chrome，但未能创建页面对象。") from exc
+            print("已有 pages 中未找到目标小红书页面，已在现有 context 中新开 page。")
+
+        if selected_page is None:
+            raise AppError("浏览器已启动，但未能获取页面对象。")
+
+        print(f"最终选中的 page URL：{selected_page.url or 'about:blank'}")
+        return browser, selected_page, False, "local_chrome"
 
     @staticmethod
     def _scroll_page(page) -> None:
@@ -728,6 +929,10 @@ class XiaohongshuDownloader:
             return f"filtered_source:{source_type}"
         if "avatar" in lowered_url or "profile" in lowered_url:
             return "avatar_like_url"
+        if "picasso-static.xiaohongshu.com" in lowered_url or "fe-platform" in lowered_url:
+            return "emoji_or_ui_asset"
+        if any(token in lowered_context for token in ("note-content-emoji", "emoji", "icon | inner")):
+            return "emoji_or_ui_asset"
         if source_type != "main_carousel" and any(
             token in lowered_context for token in ("duplicate", "cloned", "clone", "swiper-slide-duplicate")
         ):
@@ -921,11 +1126,15 @@ EXTRACTION_SCRIPT = r"""
   ]).replace(/\s*-\s*小红书.*$/, "");
 
   const author = textFromSelectors([
+    '[data-testid="note-page"] a[href*="/user/profile/"]',
+    'main a[href*="/user/profile/"]',
+    'article a[href*="/user/profile/"]',
     'meta[name="author"]',
     '[class*="author"] [class*="name"]',
     '[class*="author"]',
     '[class*="user"] [class*="name"]',
     'a[href*="/user/profile/"] span',
+    'a[href*="/user/profile/"]',
   ]).replace(/^作者[:：]?\s*/, "");
 
   const noteText = textFromSelectors([
@@ -940,10 +1149,18 @@ EXTRACTION_SCRIPT = r"""
     'meta[name="twitter:description"]',
   ]).replace(/\s*-\s*小红书.*$/, "");
 
+  const noteType = (() => {
+    const hasImageGroupSignal = imageCandidates.length >= 2;
+    if (hasImageGroupSignal) return "image";
+    if (document.querySelector('video, [class*="video-player"], [data-testid*="video"]')) return "video";
+    return "unknown";
+  })();
+
   return {
     title,
     author,
     noteText,
+    noteType,
     imageCandidates,
   };
 }

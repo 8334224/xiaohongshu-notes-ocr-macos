@@ -44,17 +44,52 @@ def cleanup_ocr_image_files(folder: Path) -> list[str]:
     return removed
 
 
-def build_download_filename(title: str, author: str, page: int, image_url: str) -> str:
+def build_download_filename(title: str, author: str, page: int, image_url: str, content_type: str | None = None) -> str:
     """Build a parser-compatible filename for a downloaded Xiaohongshu image."""
     safe_title = sanitize_filename_component(title)
     safe_author = sanitize_filename_component(author)
-    extension = detect_image_extension(image_url)
+    extension = detect_image_extension(image_url, content_type=content_type)
     return f"{safe_title}_{page}_{safe_author}_{XHS_DOWNLOAD_SUFFIX}{extension}"
 
 
-def detect_image_extension(image_url: str) -> str:
-    """Guess an image extension from the URL path."""
+def build_download_stem(title: str, author: str, page: int) -> str:
+    """Build a parser-compatible filename stem without an extension."""
+    safe_title = sanitize_filename_component(title)
+    safe_author = sanitize_filename_component(author)
+    return f"{safe_title}_{page}_{safe_author}_{XHS_DOWNLOAD_SUFFIX}"
+
+
+def detect_image_extension(image_url: str, content_type: str | None = None) -> str:
+    """Guess an image extension from content type first, then URL hints."""
+    content_type_extension = _extension_from_content_type(content_type)
+    if content_type_extension:
+        return content_type_extension
+
+    lowered_url = image_url.lower()
     suffix = Path(urlparse(image_url).path).suffix.lower()
     if suffix in SUPPORTED_EXTENSIONS:
         return suffix
-    return ".jpg"
+    if "webp" in lowered_url:
+        return ".webp"
+    if "jpeg" in lowered_url or "jpg" in lowered_url:
+        return ".jpg"
+    if "png" in lowered_url:
+        return ".png"
+    return ".webp"
+
+
+def _extension_from_content_type(content_type: str | None) -> str | None:
+    """Map HTTP image content types to supported filename suffixes."""
+    if not content_type:
+        return None
+
+    normalized = content_type.split(";", 1)[0].strip().lower()
+    mapping = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/heic": ".heic",
+        "image/heif": ".heic",
+    }
+    return mapping.get(normalized)

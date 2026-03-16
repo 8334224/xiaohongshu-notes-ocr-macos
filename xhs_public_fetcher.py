@@ -10,7 +10,7 @@ from typing import Optional
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from utils import AppError, clean_note_text
+from utils import AppError, clean_note_text, normalize_note_title
 from xhs_url_validator import ParsedXhsUrl
 
 SCRIPT_TAG_PATTERN = re.compile(r"<script\b[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
@@ -35,6 +35,7 @@ class PublicFetchResult:
     title: Optional[str]
     author: Optional[str]
     note_text: Optional[str]
+    note_type: str
     extraction_method: Optional[str]
     html_path: Optional[str]
 
@@ -50,10 +51,11 @@ class XhsPublicFetcher:
         html, final_url = self._fetch_html(parsed_url.canonical_url)
         saved_html_path = self._save_html_if_requested(html, html_output_path)
 
-        title = self._extract_title(html)
         author = self._extract_author(html)
+        title = normalize_note_title(self._extract_title(html), author)
         note_text = self._extract_note_text(html, title)
         image_urls, extraction_method = self._extract_image_urls(html)
+        note_type = self._detect_note_type(html, image_urls)
 
         return PublicFetchResult(
             final_url=final_url,
@@ -61,6 +63,7 @@ class XhsPublicFetcher:
             title=title,
             author=author,
             note_text=note_text,
+            note_type=note_type,
             extraction_method=extraction_method,
             html_path=str(saved_html_path) if saved_html_path else None,
         )
@@ -132,7 +135,17 @@ class XhsPublicFetcher:
             if value:
                 return value.strip() or None
 
-        for field in ("author", "nickname", "userName", "username"):
+        link_match = re.search(
+            r'<a[^>]+href=["\'][^"\']*/user/profile/[^"\']+["\'][^>]*>(.*?)</a>',
+            html,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if link_match:
+            linked_author = XhsPublicFetcher._strip_html(link_match.group(1)).strip()
+            if linked_author:
+                return linked_author
+
+        for field in ("author", "nickname", "nickName", "displayName", "userName", "username", "name"):
             match = re.search(rf'"{field}"\s*:\s*"([^"]+)"', html, re.IGNORECASE)
             if match:
                 return XhsPublicFetcher._unescape_text(match.group(1)).strip() or None
@@ -227,6 +240,44 @@ class XhsPublicFetcher:
     def _extract_image_urls_from_html(html: str) -> list[str]:
         """Fallback to raw HTML URL scanning."""
         return XhsPublicFetcher._dedupe_preserve_order(XhsPublicFetcher._extract_urls_from_text(html))
+
+    @staticmethod
+    def _detect_note_type(html: str, image_urls: list[str]) -> str:
+        """Classify the note roughly as video, image, or unknown."""
+        has_image_group_signal = XhsPublicFetcher._has_image_group_signal(html, image_urls)
+        has_video_signal = XhsPublicFetcher._has_video_signal(html)
+        if has_video_signal and len(image_urls) <= 1:
+            return "video"
+        if has_video_signal and not has_image_group_signal:
+            return "video"
+        if has_image_group_signal:
+            return "image"
+        if has_video_signal and len(image_urls) <= 1:
+            return "video"
+        return "unknown"
+
+    @staticmethod
+    def _has_image_group_signal(html: str, image_urls: list[str]) -> bool:
+        """Return whether the page has strong image-note signals."""
+        if len(image_urls) >= 2:
+            return True
+        pager_match = re.search(r"(?<!\d)(\d{1,2})\s*/\s*(\d{1,2})(?!\d)", html)
+        if pager_match and int(pager_match.group(2)) > 1 and len(image_urls) >= 2:
+            return True
+        return False
+
+    @staticmethod
+    def _has_video_signal(html: str) -> bool:
+        """Return whether the current note has strong video-note signals."""
+        if re.search(r"<video\b", html, re.IGNORECASE):
+            return True
+        if re.search(r'"(?:noteType|postType)"\s*:\s*"video"', html, re.IGNORECASE):
+            return True
+        if re.search(r'"videoInfo"\s*:\s*\{[^}]*"(?:masterUrl|h264Url|media)"', html, re.IGNORECASE):
+            return True
+        if re.search(r'"(?:videoUrl|masterUrl|h264Url)"\s*:\s*"https?://', html, re.IGNORECASE):
+            return True
+        return False
 
     @staticmethod
     def _extract_urls_from_text(text: str) -> list[str]:
@@ -326,6 +377,8 @@ class XhsPublicFetcher:
             return False
         lowered = url.lower()
         if any(token in lowered for token in ("avatar", "profile", "logo")):
+            return False
+        if "picasso-static.xiaohongshu.com" in lowered or "fe-platform" in lowered:
             return False
         return True
 

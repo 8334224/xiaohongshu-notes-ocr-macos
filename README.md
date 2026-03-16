@@ -6,19 +6,21 @@
 ![Strategy](https://img.shields.io/badge/download-public__fetch_%E2%86%92_browser-green)
 
 一个面向 macOS 的本地 Python 工具：  
-支持从小红书网页链接或本地图片提取正文，优先尝试免登录公开抓取正文文字与图片，失败后自动回退到浏览器抓取，完成 OCR 后写入 Apple Notes 并导出纯文本。
+支持从小红书网页链接或本地图片提取正文；链接模式会先做 `note_type` 判定，视频笔记直接输出文字，图文笔记继续图片下载 + OCR，最终写入 Apple Notes 并导出纯文本。
 
 ## Overview
 
 这个项目解决的是一个非常具体的 macOS 本地工作流：
 
 1. 从小红书拿到一篇图文笔记链接，或手动准备一组图片
-2. 先尝试免登录公开抓取正文文字与正文图片
+2. 先尝试免登录公开抓取正文文字与笔记元信息
 3. 如果公开抓取失败或结果不足，自动回退到浏览器提取
-4. 使用 macOS Vision OCR 识别图片文字
-5. 对正文文字和 OCR 结果分别做轻量清洗
-6. 按规则合并为一篇最终正文
-7. 自动归档到 Apple Notes，并导出纯文本
+4. 在链接模式最前面判定 `note_type`
+5. 视频笔记直接输出标题 / 正文，不做图片下载和 OCR
+6. 图文笔记继续下载图片并使用 macOS Vision OCR 识别图片文字
+7. 对正文文字和 OCR 结果分别做轻量清洗
+8. 按规则合并为一篇最终正文
+9. 自动归档到 Apple Notes，并导出纯文本
 
 重点不是做通用爬虫，而是尽量稳定地跑通个人高频使用场景。  
 当前实现里，`--use-local-chrome` 是更强的浏览器兜底，不是第一优先级。
@@ -36,10 +38,14 @@
 - 支持 `xhslink.com` 短链
 - 支持从混合分享文案中自动提取链接
 - URL 会先规范化，再进入统一下载流程
-- 下载策略为“免登录公开抓取优先，浏览器兜底”
+- 下载策略为“免登录公开抓取优先，浏览器兜底，随后按 `note_type` 分流”
 - 公开抓取失败或结果不足时，自动回退到 Playwright 浏览器抓取
 - 可选复用本机已登录 Chrome 会话（CDP），作为更强的浏览器兜底
 - 链接模式下会尽量提取笔记正文文字 `note_text`
+- 链接模式会优先判定笔记类型：
+  - `video`：直接输出文字，跳过图片下载和 OCR
+  - `image`：继续图片下载 + OCR
+  - `unknown`：有图片组信号时按 `image`，否则按正文优先降级
 - 正文文字会做小红书场景清洗：
   - 去标题重复前缀
   - 去尾部 hashtag 标签区
@@ -71,7 +77,7 @@ python3 main.py
 
 ### 2. 剪贴板链接模式
 
-从系统剪贴板读取小红书图文笔记链接，先尝试免登录公开抓取，失败后自动回退到浏览器抓取，再进入 OCR：
+从系统剪贴板读取小红书笔记链接，先尝试免登录公开抓取，失败后自动回退到浏览器抓取，再按 `note_type` 进入“文字直出”或“图片 OCR”分支：
 
 ```bash
 python3 main.py --from-clipboard
@@ -104,15 +110,15 @@ If public fetch is incomplete or fails -> browser fallback
         ↓
 If enabled, local Chrome can still be used as stronger fallback
         ↓
-Extract note_text and download images
+Extract title / author / note_text / note_type
         ↓
-Filename parsing and ordering
+If note_type=video -> write text directly
         ↓
-macOS Vision OCR
+If note_type=image -> download images and run OCR
         ↓
 Clean note_text and OCR text
         ↓
-Merge note_text + OCR with light deduplication
+Merge note_text + OCR with light deduplication when OCR exists
         ↓
 Write to Apple Notes
         ↓
@@ -125,14 +131,18 @@ Export output.txt
 
 1. 先把剪贴板文本解析成结构化小红书 URL
 2. 先尝试 `public_fetch` 免登录公开抓取 HTML
-3. 如果 `public_fetch` 拿到完整结果，则直接下载正文图片
-4. 如果 `public_fetch` 失败，或结果质量不足，则回退到 `playwright`
-5. 如果启用了 `--use-local-chrome`，浏览器兜底阶段会继续复用本机已登录 Chrome，也就是 `local_chrome`
+3. 如果 `public_fetch` 失败，或结果质量不足，则回退到 `playwright`
+4. 如果启用了 `--use-local-chrome`，浏览器兜底阶段会继续复用本机已登录 Chrome，也就是 `local_chrome`
+5. 提取到 `title / author / note_text / note_type` 后，再决定走哪条链路：
+   - `video`：直接输出文字
+   - `image`：继续下载图片并 OCR
+   - `unknown`：有图片组信号时按 `image`，否则按正文优先降级
 
 补充说明：
 
 - 链接模式下，程序会尽量同时提取 `note_text`
 - `note_text` 提取失败不会阻断图片下载、OCR 或 Notes 主流程
+- 视频笔记默认不会下载封面图，也不会做 OCR
 - 本地图片模式不做正文文字抓取，只走 OCR
 
 注意：
@@ -240,9 +250,11 @@ python3 main.py --from-clipboard
 
 - 先做 URL 解析与规范化
 - 先尝试 `public_fetch`
-- 尽量提取正文文字 `note_text` 和正文图片
-- 如失败或结果不足，再自动回退到 `playwright`
-- 最终把 `note_text` 和 OCR 结果按规则合并输出
+- 再判定 `note_type`
+- `video`：直接输出标题 / 正文
+- `image`：继续图片下载 + OCR
+- `unknown`：有图片组信号时按 `image`，否则按正文优先
+- 如 `public_fetch` 失败或结果不足，再自动回退到 `playwright`
 
 ### 剪贴板 + 本机 Chrome 模式
 
@@ -333,6 +345,7 @@ python3 main.py --from-clipboard --use-local-chrome
 - 本地图片模式：
   - 只输出 OCR 正文
 - 链接模式：
+  - `video`：标题和正文直接输出，不做 OCR
   - 如果只有 `note_text`，只输出 `note_text`
   - 如果只有 OCR，只输出 OCR
   - 如果 `note_text` 和 OCR 都有，先输出 `note_text`，空两行，再接 OCR
@@ -372,6 +385,12 @@ python3 main.py --from-clipboard --use-local-chrome
   - 执行 `playwright install chromium`
 - `抓取策略：public_fetch 未成功：...`
   - 这是 `public_fetch` 阶段失败，程序会自动回退到 `playwright` 或 `local_chrome`
+- `提取结果：note_type=..., title=..., author=..., image_url_count=..., has_note_text=...`
+  - 这是浏览器或公开抓取阶段的摘要，能直接看到当前笔记被判成了 `video / image / unknown`
+- `命中 video 分支，跳过图片下载和 OCR`
+  - 当前笔记被当作视频或正文优先处理，不会进入 OCR
+- `命中 image/OCR 分支，开始下载图片。note_type=...`
+  - 当前笔记会继续进入图片下载 + OCR
 - `公开抓取结果未通过质量判定：...`
   - 说明拿到了 HTML，但标题 / 作者 / 图片不完整，或只抓到 `meta` 封面图等低质量结果
 - `note_text` 为空

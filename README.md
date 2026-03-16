@@ -6,18 +6,19 @@
 ![Strategy](https://img.shields.io/badge/download-public__fetch_%E2%86%92_browser-green)
 
 一个面向 macOS 的本地 Python 工具：  
-支持从小红书网页链接或本地图片提取正文，优先尝试免登录公开抓取，失败后自动回退到浏览器抓取，完成 OCR 后写入 Apple Notes 并导出纯文本。
+支持从小红书网页链接或本地图片提取正文，优先尝试免登录公开抓取正文文字与图片，失败后自动回退到浏览器抓取，完成 OCR 后写入 Apple Notes 并导出纯文本。
 
 ## Overview
 
 这个项目解决的是一个非常具体的 macOS 本地工作流：
 
 1. 从小红书拿到一篇图文笔记链接，或手动准备一组图片
-2. 先尝试免登录公开抓取正文图片
+2. 先尝试免登录公开抓取正文文字与正文图片
 3. 如果公开抓取失败或结果不足，自动回退到浏览器提取
 4. 使用 macOS Vision OCR 识别图片文字
-5. 做轻量文本清洗
-6. 自动归档到 Apple Notes，并导出纯文本
+5. 对正文文字和 OCR 结果分别做轻量清洗
+6. 按规则合并为一篇最终正文
+7. 自动归档到 Apple Notes，并导出纯文本
 
 重点不是做通用爬虫，而是尽量稳定地跑通个人高频使用场景。  
 当前实现里，`--use-local-chrome` 是更强的浏览器兜底，不是第一优先级。
@@ -38,8 +39,14 @@
 - 下载策略为“免登录公开抓取优先，浏览器兜底”
 - 公开抓取失败或结果不足时，自动回退到 Playwright 浏览器抓取
 - 可选复用本机已登录 Chrome 会话（CDP），作为更强的浏览器兜底
+- 链接模式下会尽量提取笔记正文文字 `note_text`
+- 正文文字会做小红书场景清洗：
+  - 去标题重复前缀
+  - 去尾部 hashtag 标签区
+  - 去尾部编辑时间 / 日期 / 地点元信息
 - 自动下载正文图片并按页码命名
 - 使用 macOS Vision OCR 识别中英文混排文本
+- 最终正文会按“正文文字在前，OCR 在后”的规则合并，并自动做轻量去重
 - 自动写入 Apple Notes
 - 自动导出 `output.txt`
 - 剪贴板模式使用临时工作目录：
@@ -97,13 +104,15 @@ If public fetch is incomplete or fails -> browser fallback
         ↓
 If enabled, local Chrome can still be used as stronger fallback
         ↓
-Download images
+Extract note_text and download images
         ↓
 Filename parsing and ordering
         ↓
 macOS Vision OCR
         ↓
-Light text cleanup
+Clean note_text and OCR text
+        ↓
+Merge note_text + OCR with light deduplication
         ↓
 Write to Apple Notes
         ↓
@@ -119,6 +128,12 @@ Export output.txt
 3. 如果 `public_fetch` 拿到完整结果，则直接下载正文图片
 4. 如果 `public_fetch` 失败，或结果质量不足，则回退到 `playwright`
 5. 如果启用了 `--use-local-chrome`，浏览器兜底阶段会继续复用本机已登录 Chrome，也就是 `local_chrome`
+
+补充说明：
+
+- 链接模式下，程序会尽量同时提取 `note_text`
+- `note_text` 提取失败不会阻断图片下载、OCR 或 Notes 主流程
+- 本地图片模式不做正文文字抓取，只走 OCR
 
 注意：
 
@@ -225,7 +240,9 @@ python3 main.py --from-clipboard
 
 - 先做 URL 解析与规范化
 - 先尝试 `public_fetch`
+- 尽量提取正文文字 `note_text` 和正文图片
 - 如失败或结果不足，再自动回退到 `playwright`
+- 最终把 `note_text` 和 OCR 结果按规则合并输出
 
 ### 剪贴板 + 本机 Chrome 模式
 
@@ -313,10 +330,31 @@ python3 main.py --from-clipboard --use-local-chrome
 ## Notes Output
 
 - 标题格式：`作者：文章标题`
-- 正文格式：纯 OCR 正文
+- 本地图片模式：
+  - 只输出 OCR 正文
+- 链接模式：
+  - 如果只有 `note_text`，只输出 `note_text`
+  - 如果只有 OCR，只输出 OCR
+  - 如果 `note_text` 和 OCR 都有，先输出 `note_text`，空两行，再接 OCR
+- `note_text` 和 OCR 明显重复时，会优先保留 `note_text`，避免重复输出
 - 不保留文件名
 - 不保留页码标记
-- 多页正文会按正文顺序连续拼接
+- 多页 OCR 正文会按顺序连续拼接
+
+## Note Text Cleanup
+
+链接模式下提取到的 `note_text` 会做小红书场景清洗：
+
+- 去掉标题完整重复或核心短句重复前缀
+- 去掉尾部连续 hashtag 标签区
+- 去掉尾部时间 / 日期 / 地点元信息
+- 保留正文主体，不做总结和改写
+
+例如：
+
+- 标题：`一念空山-回响：孩子有自己的人生`
+- 原始 `note_text`：`孩子有自己的人生对孩子的过度... #亲子关系 #家庭教育 编辑于 18 小时前 浙江`
+- 清洗后：`对孩子的过度...`
 
 ## Debug & Troubleshooting
 
@@ -336,6 +374,10 @@ python3 main.py --from-clipboard --use-local-chrome
   - 这是 `public_fetch` 阶段失败，程序会自动回退到 `playwright` 或 `local_chrome`
 - `公开抓取结果未通过质量判定：...`
   - 说明拿到了 HTML，但标题 / 作者 / 图片不完整，或只抓到 `meta` 封面图等低质量结果
+- `note_text` 为空
+  - 不会中断流程；链接模式下会退化成只输出 OCR
+- `未提取到正文和 OCR 内容，跳过写入。`
+  - 说明 `note_text` 和 OCR 最终都为空，本次不会创建空白 Notes，也不会写空白 `output.txt`
 - `公开抓取调试摘要：.../public_fetch_debug.txt`
   - 打开该文件可查看最终 URL、提取方法、图片数量、质量判定原因和最终下载策略
 - `.../public_fetch_debug.json`
@@ -366,6 +408,8 @@ python3 -m unittest discover -s tests -v
 - URL 校验与规范化
 - 结构化 URL 解析
 - 免登录公开抓取
+- `note_text` 提取与小红书正文清洗
+- `note_text + OCR` 合并与轻量去重
 - 公开抓取结果质量判定
 - 下载文件名兼容现有 parser
 - 手动模式与剪贴板模式目录策略

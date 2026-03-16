@@ -232,10 +232,10 @@ class XiaohongshuDownloader:
         if not final_host.endswith("xiaohongshu.com"):
             reasons.append("final_url 不是小红书域名")
         if public_result.note_type == "video":
-            if not public_result.note_text:
-                reasons.append("视频笔记缺少正文")
             if not public_result.author:
                 reasons.append("缺少作者")
+            if not public_result.title and not public_result.note_text:
+                reasons.append("视频笔记缺少标题和正文")
             return not reasons, reasons
         if not public_result.title:
             reasons.append("缺少标题")

@@ -421,8 +421,11 @@ class ClipboardAndDownloadTests(unittest.TestCase):
                 )
 
             self.assertTrue(result)
-            mock_notes_writer_cls.return_value.create_note.assert_called_once_with("", "视频正文内容。")
-            self.assertEqual(txt_path.read_text(encoding="utf-8"), "视频正文内容。")
+            mock_notes_writer_cls.return_value.create_note.assert_called_once_with(
+                "",
+                "作者：Cherry小圆圆呦\n\n视频正文内容。",
+            )
+            self.assertEqual(txt_path.read_text(encoding="utf-8"), "作者：Cherry小圆圆呦\n\n视频正文内容。")
 
     def test_write_note_text_only_flow_uses_title_when_video_has_no_body(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -466,6 +469,28 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             self.assertEqual(
                 txt_path.read_text(encoding="utf-8"),
                 "科技柯基：我为什么放弃了用了5年的Notion...?\n\n干净正文。",
+            )
+
+    def test_write_note_text_only_flow_includes_author_line_when_title_missing(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            txt_path = Path(temp_dir) / "output.txt"
+            with patch("main.NotesWriter") as mock_notes_writer_cls:
+                result = write_note_text_only_flow(
+                    "OCR",
+                    str(txt_path),
+                    note_text="一般习练者都追求稳定中超常发挥。",
+                    note_title="",
+                    note_author="北海阿斯汤加瑜伽",
+                )
+
+            self.assertTrue(result)
+            mock_notes_writer_cls.return_value.create_note.assert_called_once_with(
+                "",
+                "作者：北海阿斯汤加瑜伽\n\n一般习练者都追求稳定中超常发挥。",
+            )
+            self.assertEqual(
+                txt_path.read_text(encoding="utf-8"),
+                "作者：北海阿斯汤加瑜伽\n\n一般习练者都追求稳定中超常发挥。",
             )
 
     def test_detect_note_type_prefers_image_when_gallery_signals_exist(self) -> None:
@@ -867,6 +892,23 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             note_text="笔记正文",
             note_type="image",
             extraction_method="embedded_json",
+            html_path="/tmp/public_note.html",
+        )
+
+        usable, reasons = XiaohongshuDownloader._is_public_fetch_usable(result)
+
+        self.assertTrue(usable)
+        self.assertEqual(reasons, [])
+
+    def test_public_fetch_quality_accepts_video_result_with_title_only(self) -> None:
+        result = PublicFetchResult(
+            final_url="https://www.xiaohongshu.com/explore/abc123",
+            image_urls=["https://img.example.com/cover.jpg"],
+            title='为什么我们开始需要"搭子"了？',
+            author="作用力",
+            note_text=None,
+            note_type="video",
+            extraction_method="meta_tags",
             html_path="/tmp/public_note.html",
         )
 

@@ -226,6 +226,38 @@ class PublicFetcherTests(unittest.TestCase):
 
         self.assertEqual(result.note_text, "第一段\n\n第二段")
 
+    def test_unescape_text_decodes_nested_quote_entities(self) -> None:
+        raw = "作用力：为什么我们开始需要&amp;quot;搭子&amp;quot;了？"
+
+        normalized = XhsPublicFetcher._unescape_text(raw)
+
+        self.assertEqual(normalized, '作用力：为什么我们开始需要"搭子"了？')
+
+    def test_normalize_note_title_decodes_nested_quote_entities(self) -> None:
+        normalized = normalize_note_title("作用力：为什么我们开始需要&amp;quot;搭子&amp;quot;了？", "作者")
+
+        self.assertEqual(normalized, '作用力：为什么我们开始需要"搭子"了？')
+
+    @patch("xhs_public_fetcher.urlopen")
+    def test_fetch_public_note_decodes_html_entities_in_author_title_and_text(self, mock_urlopen) -> None:
+        html = """
+        <html>
+          <head>
+            <meta property="og:title" content="作用力：为什么我们开始需要&amp;quot;搭子&amp;quot;了？ - 小红书">
+            <meta name="author" content="Tom &amp;amp; Jerry">
+            <meta name="description" content="我们开始需要&amp;quot;搭子&amp;quot;，因为陪伴很重要。">
+            <meta property="og:image" content="https://ci.xiaohongshu.com/cover.jpg">
+          </head>
+        </html>
+        """
+        mock_urlopen.return_value = _FakeResponse(html, self.parsed_url.canonical_url)
+
+        result = fetch_public_note(self.parsed_url)
+
+        self.assertEqual(result.title, '作用力：为什么我们开始需要"搭子"了？')
+        self.assertEqual(result.author, "Tom & Jerry")
+        self.assertEqual(result.note_text, '我们开始需要"搭子"，因为陪伴很重要。')
+
     @patch("xhs_public_fetcher.urlopen")
     def test_fetch_public_note_detects_video_for_explore_url(self, mock_urlopen) -> None:
         html = """
@@ -285,6 +317,27 @@ class PublicFetcherTests(unittest.TestCase):
         result = fetch_public_note(profile_parsed_url)
 
         self.assertEqual(result.note_type, "video")
+
+    @patch("xhs_public_fetcher.urlopen")
+    def test_fetch_public_note_detects_video_from_og_type_and_og_video(self, mock_urlopen) -> None:
+        html = """
+        <html>
+          <head>
+            <meta property="og:type" content="video">
+            <meta property="og:video" content="https://video.example.com/demo.mp4">
+            <meta property="og:title" content="为什么我们开始需要&amp;quot;搭子&amp;quot;了？ - 小红书">
+            <meta name="author" content="作用力">
+            <meta property="og:image" content="https://sns-webpic-qc.xhscdn.com/cover!nd_dft_wlteh_jpg_3">
+          </head>
+        </html>
+        """
+        mock_urlopen.return_value = _FakeResponse(html, self.parsed_url.canonical_url)
+
+        result = fetch_public_note(self.parsed_url)
+
+        self.assertEqual(result.note_type, "video")
+        self.assertEqual(result.title, '为什么我们开始需要"搭子"了？')
+        self.assertEqual(result.author, "作用力")
 
     @patch("xhs_public_fetcher.urlopen")
     def test_fetch_public_note_keeps_video_when_only_single_cover_image_exists(self, mock_urlopen) -> None:
@@ -584,6 +637,14 @@ class PublicFetcherTests(unittest.TestCase):
         cleaned = strip_redundant_leading_title(note_text, title)
 
         self.assertEqual(cleaned, "后续正文")
+
+    def test_strip_redundant_leading_title_handles_html_entity_difference(self) -> None:
+        title = "作用力：为什么我们开始需要&amp;quot;搭子&amp;quot;了？"
+        note_text = '为什么我们开始需要"搭子"了？'
+
+        cleaned = strip_redundant_leading_title(note_text, title)
+
+        self.assertEqual(cleaned, "")
 
     def test_strip_redundant_leading_title_returns_empty_when_note_text_only_equals_title(self) -> None:
         title = "80后布局龙虾，身价越超千亿！"

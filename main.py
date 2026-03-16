@@ -163,12 +163,16 @@ def write_note_text_only_flow(
     note_author: str | None = None,
 ) -> bool:
     """Write a note directly from extracted note text without OCR images."""
-    generated_at = now()
     effective_title = (note_title or "").strip()
+    effective_author = (note_author or "").strip()
     rendered_title = _render_link_note_title(note_title, note_author)
     cleaned_note_text = strip_redundant_leading_title(note_text, effective_title)
-    note_body = cleaned_note_text
-    export_content = cleaned_note_text
+    author_leading_line = f"作者：{effective_author}" if not effective_title and effective_author else ""
+    if author_leading_line and cleaned_note_text:
+        note_body = f"{author_leading_line}\n\n{cleaned_note_text}"
+    else:
+        note_body = author_leading_line or cleaned_note_text
+    export_content = note_body
     if not note_body.strip() and not rendered_title.strip():
         print("未提取到正文和 OCR 内容，跳过写入。")
         return True
@@ -194,6 +198,8 @@ def write_note_text_only_flow(
             print(f"备忘录标题：{rendered_title}")
     else:
         print("笔记标题：无")
+        if effective_author:
+            print(f"笔记作者：{effective_author}")
     if txt_export_error is None:
         print(f"TXT 导出路径：{txt_output_path}")
     else:

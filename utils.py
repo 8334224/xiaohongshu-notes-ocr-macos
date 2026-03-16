@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html as html_lib
 import re
 from datetime import datetime
 from pathlib import Path
@@ -52,7 +53,7 @@ def clean_ocr_text(text: str) -> str:
 
 def clean_note_text(note_text: str, title: str = "") -> str:
     """Clean note text conservatively for Xiaohongshu正文提取."""
-    normalized_note_text = note_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    normalized_note_text = _decode_html_entities(note_text).replace("\r\n", "\n").replace("\r", "\n").strip()
     normalized_note_text = _strip_leading_hashtag_block(normalized_note_text)
     cleaned = clean_ocr_text(normalized_note_text)
     if not cleaned:
@@ -68,8 +69,8 @@ def clean_note_text(note_text: str, title: str = "") -> str:
 
 def normalize_note_title(title: str | None, author: str | None = None) -> str | None:
     """Return a user-visible title only when it looks like a real note title."""
-    cleaned_title = clean_ocr_text(title or "").strip()
-    cleaned_author = clean_ocr_text(author or "").strip()
+    cleaned_title = clean_ocr_text(_decode_html_entities(title or "")).strip()
+    cleaned_author = clean_ocr_text(_decode_html_entities(author or "")).strip()
     if not cleaned_title:
         return None
     if "#" in cleaned_title:
@@ -87,28 +88,46 @@ def normalize_note_title(title: str | None, author: str | None = None) -> str | 
 
 def strip_redundant_leading_title(note_text: str | None, title: str | None) -> str:
     """Strip a duplicated leading title from note text during final rendering."""
-    cleaned_note_text = (note_text or "").strip()
-    cleaned_title = clean_ocr_text(title or "").strip()
+    cleaned_note_text = _decode_html_entities(note_text or "").strip()
+    cleaned_title = clean_ocr_text(_decode_html_entities(title or "")).strip()
     if not cleaned_note_text or not cleaned_title:
         return cleaned_note_text
-    first_line, _, remainder = cleaned_note_text.partition("\n")
-    if _normalize_title_dedupe_text(first_line) == _normalize_title_dedupe_text(cleaned_title):
-        return remainder.lstrip(" \t\r\n")
-    if not cleaned_note_text.startswith(cleaned_title):
+    candidates = [cleaned_title]
+    core_title = _extract_core_title_phrase(cleaned_title)
+    if core_title and core_title not in candidates:
+        candidates.append(core_title)
+
+    for candidate in candidates:
+        first_line, _, remainder = cleaned_note_text.partition("\n")
+        if _normalize_title_dedupe_text(first_line) == _normalize_title_dedupe_text(candidate):
+            return remainder.lstrip(" \t\r\n")
+        if cleaned_note_text.startswith(candidate):
+            return cleaned_note_text[len(candidate) :].lstrip(" \t\r\n")
+
         normalized_note_text = _normalize_title_dedupe_text(cleaned_note_text)
-        normalized_title = _normalize_title_dedupe_text(cleaned_title)
-        if not normalized_note_text.startswith(normalized_title):
-            return cleaned_note_text
-        consume_index = _find_normalized_prefix_boundary(cleaned_note_text, len(normalized_title))
-        return cleaned_note_text[consume_index:].lstrip(" \t\r\n")
-    return cleaned_note_text[len(cleaned_title) :].lstrip(" \t\r\n")
+        normalized_title = _normalize_title_dedupe_text(candidate)
+        if normalized_note_text.startswith(normalized_title):
+            consume_index = _find_normalized_prefix_boundary(cleaned_note_text, len(normalized_title))
+            return cleaned_note_text[consume_index:].lstrip(" \t\r\n")
+    return cleaned_note_text
 
 
 def _normalize_title_dedupe_text(text: str) -> str:
     """Normalize text for leading-title deduplication."""
-    lowered = clean_ocr_text(text).lower()
+    lowered = clean_ocr_text(_decode_html_entities(text)).lower()
     lowered = re.sub(r"\s+", "", lowered)
     return re.sub(r"[，。！？；：、“”‘’（）()【】《》〈〉,.!?;:'\"_\-—|]+", "", lowered)
+
+
+def _decode_html_entities(text: str) -> str:
+    """Decode nested HTML entities until the string stabilizes."""
+    value = text
+    for _ in range(6):
+        decoded = html_lib.unescape(value)
+        if decoded == value:
+            break
+        value = decoded
+    return value
 
 
 def _find_normalized_prefix_boundary(text: str, normalized_length: int) -> int:

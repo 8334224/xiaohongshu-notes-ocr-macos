@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html as html_lib
 import json
 import re
 from dataclasses import dataclass
@@ -271,7 +272,13 @@ class XhsPublicFetcher:
         """Return whether the current note has strong video-note signals."""
         if re.search(r"<video\b", html, re.IGNORECASE):
             return True
+        if re.search(r'<meta\b[^>]+(?:property|name)=["\']og:type["\'][^>]+content=["\']video["\']', html, re.IGNORECASE):
+            return True
+        if re.search(r'<meta\b[^>]+(?:property|name)=["\']og:video["\'][^>]+content=["\']https?://', html, re.IGNORECASE):
+            return True
         if re.search(r'"(?:noteType|postType)"\s*:\s*"video"', html, re.IGNORECASE):
+            return True
+        if re.search(r'"type"\s*:\s*"video"', html, re.IGNORECASE):
             return True
         if re.search(r'"videoInfo"\s*:\s*\{[^}]*"(?:masterUrl|h264Url|media)"', html, re.IGNORECASE):
             return True
@@ -396,13 +403,14 @@ class XhsPublicFetcher:
 
     @staticmethod
     def _unescape_text(value: str) -> str:
-        """Unescape common HTML/JSON text encodings."""
-        return (
-            value.replace("\\/", "/")
-            .replace("\\u002F", "/")
-            .replace("&amp;", "&")
-            .replace("&quot;", '"')
-        )
+        """Unescape common HTML/JSON text encodings, including nested entities."""
+        normalized = value.replace("\\/", "/").replace("\\u002F", "/")
+        for _ in range(6):
+            decoded = html_lib.unescape(normalized)
+            if decoded == normalized:
+                break
+            normalized = decoded
+        return normalized
 
     @staticmethod
     def _clean_note_text(value: str, title: Optional[str]) -> Optional[str]:

@@ -131,9 +131,11 @@ Export output.txt
 
 1. 先把剪贴板文本解析成结构化小红书 URL
 2. 先尝试 `public_fetch` 免登录公开抓取 HTML
-3. 如果 `public_fetch` 失败，或结果质量不足，则回退到 `playwright`
-4. 如果启用了 `--use-local-chrome`，浏览器兜底阶段会继续复用本机已登录 Chrome，也就是 `local_chrome`
-5. 提取到 `title / author / note_text / note_type` 后，再决定走哪条链路：
+3. 在 `public_fetch` 阶段优先提取 `title / author / note_text / note_type`
+4. 如果 `public_fetch` 已经明确判定为 `video`，且标题 / 正文信息可用，则直接按视频分支输出文字
+5. 如果 `public_fetch` 失败，或结果质量不足，则回退到 `playwright`
+6. 如果启用了 `--use-local-chrome`，浏览器兜底阶段会继续复用本机已登录 Chrome，也就是 `local_chrome`
+7. 提取到 `title / author / note_text / note_type` 后，再决定走哪条链路：
    - `video`：直接输出文字
    - `image`：继续下载图片并 OCR
    - `unknown`：有图片组信号时按 `image`，否则按正文优先降级
@@ -142,6 +144,7 @@ Export output.txt
 
 - 链接模式下，程序会尽量同时提取 `note_text`
 - `note_text` 提取失败不会阻断图片下载、OCR 或 Notes 主流程
+- 明确的视频笔记会尽量在 `public_fetch` 阶段直接短路，避免回退到封面图下载或 OCR
 - 视频笔记默认不会下载封面图，也不会做 OCR
 - 本地图片模式不做正文文字抓取，只走 OCR
 
@@ -250,7 +253,7 @@ python3 main.py --from-clipboard
 
 - 先做 URL 解析与规范化
 - 先尝试 `public_fetch`
-- 再判定 `note_type`
+- 优先在 `public_fetch` 阶段判定 `note_type`
 - `video`：直接输出标题 / 正文
 - `image`：继续图片下载 + OCR
 - `unknown`：有图片组信号时按 `image`，否则按正文优先
@@ -346,6 +349,7 @@ python3 main.py --from-clipboard --use-local-chrome
   - 只输出 OCR 正文
 - 链接模式：
   - `video`：标题和正文直接输出，不做 OCR
+  - 无标题但有作者时，会在正文前输出一行 `作者：<name>`
   - 如果只有 `note_text`，只输出 `note_text`
   - 如果只有 OCR，只输出 OCR
   - 如果 `note_text` 和 OCR 都有，先输出 `note_text`，空两行，再接 OCR
@@ -385,6 +389,8 @@ python3 main.py --from-clipboard --use-local-chrome
   - 执行 `playwright install chromium`
 - `抓取策略：public_fetch 未成功：...`
   - 这是 `public_fetch` 阶段失败，程序会自动回退到 `playwright` 或 `local_chrome`
+- `public_fetch 结果：... note_type=video ...`
+  - 说明公开抓取阶段已经识别为视频；如果标题 / 作者 / 正文满足最低条件，会直接走视频分支，不再进入图片下载和 OCR
 - `提取结果：note_type=..., title=..., author=..., image_url_count=..., has_note_text=...`
   - 这是浏览器或公开抓取阶段的摘要，能直接看到当前笔记被判成了 `video / image / unknown`
 - `命中 video 分支，跳过图片下载和 OCR`
@@ -439,7 +445,7 @@ python3 -m unittest discover -s tests -v
 
 ## Limitations
 
-- 当前只支持小红书图文笔记，不处理视频
+- 当前支持图文笔记和视频笔记，但视频笔记默认只提取文字内容，不做封面图 OCR
 - 不处理评论、相关推荐、用户主页
 - 不支持多链接批量处理
 - 不做复杂反爬绕过

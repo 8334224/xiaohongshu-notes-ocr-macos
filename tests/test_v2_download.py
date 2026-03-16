@@ -11,7 +11,7 @@ from downloader_utils import build_download_filename, cleanup_ocr_image_files, s
 from main import run_existing_images_flow, run_from_clipboard_flow
 from parser import parse_image_filename
 from utils import AppError
-from xhs_downloader import ExtractedNote, XiaohongshuDownloader
+from xhs_downloader import DownloadResult, ExtractedNote, XiaohongshuDownloader
 from xhs_url_validator import ParsedXhsUrl, parse_xhs_url, validate_xhs_note_url
 from xhs_public_fetcher import PublicFetchResult
 
@@ -223,9 +223,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
     ) -> None:
         mock_read_clipboard.return_value = "https://www.xiaohongshu.com/explore/abc123"
         mock_validate_url.return_value = "https://www.xiaohongshu.com/explore/abc123"
-        mock_downloader_cls.return_value.download_from_url.return_value = [
-            Path("/tmp/test_1_作者_来自小红书自动下载.jpg")
-        ]
+        mock_downloader_cls.return_value.download_from_url_with_result.return_value = DownloadResult(
+            paths=[Path("/tmp/test_1_作者_来自小红书自动下载.jpg")],
+            note_text="笔记正文",
+        )
         with TemporaryDirectory() as temp_dir:
             workdir = Path(temp_dir) / "run"
 
@@ -233,7 +234,12 @@ class ClipboardAndDownloadTests(unittest.TestCase):
                 mock_run_existing_images_flow.return_value = True
                 run_from_clipboard_flow("OCR")
 
-            mock_run_existing_images_flow.assert_called_once_with(workdir, "OCR", str(workdir / "output.txt"))
+            mock_run_existing_images_flow.assert_called_once_with(
+                workdir,
+                "OCR",
+                str(workdir / "output.txt"),
+                note_text="笔记正文",
+            )
 
     @patch("main.run_existing_images_flow")
     @patch("main.XiaohongshuDownloader")
@@ -248,9 +254,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
     ) -> None:
         mock_read_clipboard.return_value = "https://www.xiaohongshu.com/explore/abc123"
         mock_validate_url.return_value = "https://www.xiaohongshu.com/explore/abc123"
-        mock_downloader_cls.return_value.download_from_url.return_value = [
-            Path("/tmp/test_1_作者_来自小红书自动下载.jpg")
-        ]
+        mock_downloader_cls.return_value.download_from_url_with_result.return_value = DownloadResult(
+            paths=[Path("/tmp/test_1_作者_来自小红书自动下载.jpg")],
+            note_text="笔记正文",
+        )
         with TemporaryDirectory() as temp_dir:
             workdir = Path(temp_dir) / "run"
 
@@ -268,7 +275,12 @@ class ClipboardAndDownloadTests(unittest.TestCase):
                 use_local_chrome=True,
                 chrome_cdp_url="http://127.0.0.1:9223",
             )
-            mock_run_existing_images_flow.assert_called_once_with(workdir, "OCR", str(workdir / "output.txt"))
+            mock_run_existing_images_flow.assert_called_once_with(
+                workdir,
+                "OCR",
+                str(workdir / "output.txt"),
+                note_text="笔记正文",
+            )
 
     def test_downloader_stores_local_chrome_options(self) -> None:
         downloader = XiaohongshuDownloader(use_local_chrome=True, chrome_cdp_url="http://127.0.0.1:9333")
@@ -282,6 +294,7 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             image_urls=["https://img.example.com/1.jpg"],
             title="小红书 - 你的生活兴趣社区",
             author=None,
+            note_text=None,
             extraction_method="meta_tags",
             html_path="/tmp/public_note.html",
         )
@@ -298,6 +311,7 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             image_urls=["https://img.example.com/cover.jpg"],
             title="标题",
             author="作者",
+            note_text=None,
             extraction_method="meta_tags",
             html_path="/tmp/public_fetch.html",
         )
@@ -313,6 +327,7 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             image_urls=["https://img.example.com/1.jpg"],
             title="标题",
             author="作者",
+            note_text="笔记正文",
             extraction_method="embedded_json",
             html_path="/tmp/public_note.html",
         )
@@ -344,6 +359,7 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             image_urls=["https://img.example.com/1.jpg"],
             title="标题",
             author="作者",
+            note_text="笔记正文",
             extraction_method="embedded_json",
             html_path=None,
         )
@@ -352,6 +368,7 @@ class ClipboardAndDownloadTests(unittest.TestCase):
 
         self.assertEqual(note.title, "标题")
         self.assertEqual(note.author, "作者")
+        self.assertEqual(note.note_text, "笔记正文")
         self.assertEqual(note.image_urls, ["https://img.example.com/1.jpg"])
         mock_extract_note.assert_not_called()
 
@@ -377,18 +394,21 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             image_urls=["https://img.example.com/1.jpg"],
             title="小红书 - 你的生活兴趣社区",
             author="",
+            note_text=None,
             extraction_method="meta_tags",
             html_path=None,
         )
         mock_extract_note.return_value = ExtractedNote(
             title="标题",
             author="作者",
+            note_text="浏览器正文",
             image_urls=["https://img.example.com/1.jpg"],
         )
 
         note = XiaohongshuDownloader()._extract_note_with_fallback(parsed)
 
         self.assertEqual(note.title, "标题")
+        self.assertEqual(note.note_text, "浏览器正文")
         mock_extract_note.assert_called_once_with(parsed.canonical_url)
 
     @patch("xhs_downloader.fetch_public_note")
@@ -412,6 +432,7 @@ class ClipboardAndDownloadTests(unittest.TestCase):
         mock_extract_note.return_value = ExtractedNote(
             title="标题",
             author="作者",
+            note_text="浏览器正文",
             image_urls=["https://img.example.com/1.jpg"],
         )
 
@@ -419,6 +440,7 @@ class ClipboardAndDownloadTests(unittest.TestCase):
 
         self.assertEqual(note.title, "标题")
         self.assertEqual(note.author, "作者")
+        self.assertEqual(note.note_text, "浏览器正文")
         mock_extract_note.assert_called_once_with(parsed.canonical_url)
 
     def test_public_fetch_failure_debug_summary_is_written(self) -> None:
@@ -457,12 +479,12 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             self.assertEqual(payload["quality_reason"], "public blocked")
             self.assertEqual(payload["download_strategy_used"], "playwright")
 
-    @patch.object(XiaohongshuDownloader, "download_from_parsed_url")
+    @patch.object(XiaohongshuDownloader, "download_from_parsed_url_with_result")
     @patch("xhs_downloader.parse_xhs_url")
     def test_download_from_url_parses_structured_url_before_download(
         self,
         mock_parse_xhs_url,
-        mock_download_from_parsed_url,
+        mock_download_from_parsed_url_with_result,
     ) -> None:
         parsed = ParsedXhsUrl(
             original_input="https://www.xiaohongshu.com/explore/abc123",
@@ -475,13 +497,16 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             share_link_host=None,
         )
         mock_parse_xhs_url.return_value = parsed
-        mock_download_from_parsed_url.return_value = [Path("/tmp/fake.jpg")]
+        mock_download_from_parsed_url_with_result.return_value = DownloadResult(
+            paths=[Path("/tmp/fake.jpg")],
+            note_text="笔记正文",
+        )
 
         result = XiaohongshuDownloader().download_from_url("https://www.xiaohongshu.com/explore/abc123")
 
         self.assertEqual(result, [Path("/tmp/fake.jpg")])
         mock_parse_xhs_url.assert_called_once_with("https://www.xiaohongshu.com/explore/abc123")
-        mock_download_from_parsed_url.assert_called_once_with(parsed)
+        mock_download_from_parsed_url_with_result.assert_called_once_with(parsed)
 
     @patch("main.run_existing_images_flow")
     @patch("main.XiaohongshuDownloader")
@@ -496,7 +521,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
     ) -> None:
         mock_read_clipboard.return_value = "https://www.xiaohongshu.com/explore/abc123"
         mock_validate_url.return_value = "https://www.xiaohongshu.com/explore/abc123"
-        mock_downloader_cls.return_value.download_from_url.return_value = [Path("/tmp/fake.jpg")]
+        mock_downloader_cls.return_value.download_from_url_with_result.return_value = DownloadResult(
+            paths=[Path("/tmp/fake.jpg")],
+            note_text="笔记正文",
+        )
         mock_run_existing_images_flow.return_value = True
 
         with TemporaryDirectory() as temp_dir:
@@ -522,7 +550,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
     ) -> None:
         mock_read_clipboard.return_value = "https://www.xiaohongshu.com/explore/abc123"
         mock_validate_url.return_value = "https://www.xiaohongshu.com/explore/abc123"
-        mock_downloader_cls.return_value.download_from_url.return_value = [Path("/tmp/fake.jpg")]
+        mock_downloader_cls.return_value.download_from_url_with_result.return_value = DownloadResult(
+            paths=[Path("/tmp/fake.jpg")],
+            note_text="笔记正文",
+        )
         mock_run_existing_images_flow.side_effect = AppError("OCR failed")
 
         with TemporaryDirectory() as temp_dir:
@@ -549,6 +580,39 @@ class ClipboardAndDownloadTests(unittest.TestCase):
 
             self.assertTrue(result)
             self.assertTrue(txt_path.exists())
+
+    def test_run_existing_images_flow_skips_empty_body_write(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            (folder / "标题_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
+
+            with (
+                patch("main.VisionOCR") as mock_ocr_cls,
+                patch("main.NotesWriter") as mock_notes_writer_cls,
+                patch("builtins.print") as mock_print,
+            ):
+                mock_ocr_cls.return_value.recognize_text.return_value = "   "
+                txt_path = folder / "output.txt"
+                result = run_existing_images_flow(folder, "OCR", str(txt_path), note_text="  ")
+
+            self.assertTrue(result)
+            self.assertFalse(txt_path.exists())
+            mock_notes_writer_cls.return_value.create_note.assert_not_called()
+            mock_print.assert_any_call("未提取到正文和 OCR 内容，跳过写入。")
+
+    def test_run_existing_images_flow_skips_empty_body_even_when_note_text_missing(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            (folder / "标题_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
+
+            with patch("main.VisionOCR") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.recognize_text.return_value = ""
+                txt_path = folder / "output.txt"
+                result = run_existing_images_flow(folder, "OCR", str(txt_path))
+
+            self.assertTrue(result)
+            self.assertFalse(txt_path.exists())
+            mock_notes_writer_cls.return_value.create_note.assert_not_called()
 
     def test_normalize_image_urls_deduplicates_by_canonical_url(self) -> None:
         urls = [

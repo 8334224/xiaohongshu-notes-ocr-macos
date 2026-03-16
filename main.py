@@ -54,7 +54,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_existing_images_flow(input_folder: Path, notes_folder: str, txt_output: str) -> bool:
+def run_existing_images_flow(
+    input_folder: Path,
+    notes_folder: str,
+    txt_output: str,
+    note_text: str | None = None,
+) -> bool:
     """Run the existing OCR-to-Notes workflow on files already in OCR folder."""
     print(f"扫描 OCR 文件夹：{input_folder}")
     scan_result = scan_and_validate_images_with_report(input_folder)
@@ -74,7 +79,10 @@ def run_existing_images_flow(input_folder: Path, notes_folder: str, txt_output: 
 
     generated_at = now()
     note_title = build_note_title(images[0].title, images[0].author, generated_at)
-    note_body = build_note_body(str(input_folder), generated_at, images, results)
+    note_body = build_note_body(str(input_folder), generated_at, images, results, note_text=note_text)
+    if not note_body.strip():
+        print("未提取到正文和 OCR 内容，跳过写入。")
+        return True
 
     print(f"写入苹果备忘录文件夹：{notes_folder}")
     NotesWriter(notes_folder).create_note(note_title, note_body)
@@ -119,15 +127,20 @@ def run_from_clipboard_flow(
         url = validate_xhs_note_url(clipboard_text)
         print(f"已识别 URL：{url}")
         print("正在提取图片...")
-        downloaded_paths = XiaohongshuDownloader(
+        download_result = XiaohongshuDownloader(
             output_folder=workdir,
             debug_folder=workdir,
             use_local_chrome=use_local_chrome,
             chrome_cdp_url=chrome_cdp_url,
-        ).download_from_url(url)
-        print(f"已下载 {len(downloaded_paths)} 张图片到：{workdir}")
+        ).download_from_url_with_result(url)
+        print(f"已下载 {len(download_result.paths)} 张图片到：{workdir}")
         print("开始进入 OCR 流程...")
-        txt_success = run_existing_images_flow(workdir, notes_folder, str(txt_output_path))
+        txt_success = run_existing_images_flow(
+            workdir,
+            notes_folder,
+            str(txt_output_path),
+            note_text=download_result.note_text,
+        )
         if txt_success:
             shutil.rmtree(workdir)
             print("本次运行成功，临时工作目录已自动清理。")

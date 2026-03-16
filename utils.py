@@ -50,9 +50,71 @@ def clean_ocr_text(text: str) -> str:
     return "\n".join(cleaned_lines).strip()
 
 
+def clean_note_text(note_text: str, title: str = "") -> str:
+    """Clean note text conservatively for Xiaohongshu正文提取."""
+    cleaned = clean_ocr_text(note_text)
+    if not cleaned:
+        return ""
+
+    cleaned = _strip_repeated_title_prefix(cleaned, title)
+    cleaned = _strip_tail_hashtag_block(cleaned)
+    cleaned = _strip_tail_metadata(cleaned)
+    return cleaned.strip()
+
+
 def export_text_file(path: Path, content: str) -> None:
     """Write note content to a local txt file."""
     path.write_text(content, encoding="utf-8")
+
+
+def _strip_repeated_title_prefix(note_text: str, title: str) -> str:
+    """Remove a repeated title or title core phrase from the beginning of note text."""
+    cleaned_title = clean_ocr_text(title).strip()
+    if not cleaned_title:
+        return note_text
+
+    candidates = [cleaned_title]
+    core_title = _extract_core_title_phrase(cleaned_title)
+    if core_title and core_title not in candidates:
+        candidates.append(core_title)
+
+    for candidate in candidates:
+        if note_text.startswith(candidate):
+            stripped = note_text[len(candidate) :].lstrip(" \t\r\n：:，,。.!！?？-—_|")
+            if stripped:
+                return stripped
+    return note_text
+
+
+def _extract_core_title_phrase(title: str) -> str:
+    """Extract the last semantic title segment using common separators."""
+    parts = [part.strip() for part in re.split(r"[：:\-—_|]", title) if part.strip()]
+    return parts[-1] if parts else title.strip()
+
+
+def _strip_tail_hashtag_block(note_text: str) -> str:
+    """Remove a trailing Xiaohongshu hashtag block."""
+    metadata_pattern = (
+        r"(?:\s*(?:编辑于|发布于)\s*)?"
+        r"(?:(?:\d+\s*(?:分钟|小时|天)前)|(?:\d+(?:分钟|小时|天)前)|昨天|今天|刚刚"
+        r"|(?:\d{4}[-/])?\d{1,2}[-/]\d{1,2})(?:\s*[\u4E00-\u9FFF]{1,12})?\s*$"
+    )
+    text_without_metadata = re.sub(metadata_pattern, "", note_text).rstrip()
+    match = re.search(r"(?:^|[\s。！？!?])(#\S+(?:\s+#\S+)*)\s*$", text_without_metadata)
+    if not match:
+        return note_text.strip()
+    return text_without_metadata[: match.start(1)].rstrip()
+
+
+def _strip_tail_metadata(note_text: str) -> str:
+    """Remove trailing publish/edit time and optional location metadata."""
+    return re.sub(
+        r"(?:\s*(?:编辑于|发布于)\s*)?"
+        r"(?:(?:\d+\s*(?:分钟|小时|天)前)|(?:\d+(?:分钟|小时|天)前)|昨天|今天|刚刚"
+        r"|(?:\d{4}[-/])?\d{1,2}[-/]\d{1,2})(?:\s*[\u4E00-\u9FFF]{1,12})?\s*$",
+        "",
+        note_text,
+    ).strip()
 
 
 def _should_merge_lines(previous_line: str, current_line: str) -> bool:

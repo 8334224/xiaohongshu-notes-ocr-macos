@@ -30,6 +30,110 @@ class FormatterTests(unittest.TestCase):
         self.assertEqual(body, "第一页 OCR 文本第二页 OCR 文本")
         self.assertNotIn("\n\n第二页 OCR 文本", body)
 
+    def test_build_note_body_merges_note_text_before_ocr(self) -> None:
+        images = [ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1)]
+
+        body = build_note_body(
+            "/Users/test/Desktop/OCR",
+            datetime(2026, 3, 11, 15, 42),
+            images,
+            ["OCR 正文"],
+            note_text="笔记正文",
+        )
+
+        self.assertEqual(body, "笔记正文\n\nOCR 正文")
+
+    def test_build_note_body_returns_only_note_text_when_ocr_empty(self) -> None:
+        images = [ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1)]
+
+        body = build_note_body(
+            "/Users/test/Desktop/OCR",
+            datetime(2026, 3, 11, 15, 42),
+            images,
+            [""],
+            note_text="笔记正文",
+        )
+
+        self.assertEqual(body, "笔记正文")
+
+    def test_build_note_body_returns_only_ocr_when_note_text_empty(self) -> None:
+        images = [ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1)]
+
+        body = build_note_body(
+            "/Users/test/Desktop/OCR",
+            datetime(2026, 3, 11, 15, 42),
+            images,
+            ["OCR 正文"],
+            note_text="",
+        )
+
+        self.assertEqual(body, "OCR 正文")
+
+    def test_build_note_body_returns_empty_when_note_text_and_ocr_are_empty(self) -> None:
+        images = [ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1)]
+
+        body = build_note_body(
+            "/Users/test/Desktop/OCR",
+            datetime(2026, 3, 11, 15, 42),
+            images,
+            [""],
+            note_text="  ",
+        )
+
+        self.assertEqual(body, "")
+
+    def test_build_note_body_avoids_duplicate_when_note_text_contains_ocr(self) -> None:
+        images = [ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1)]
+
+        body = build_note_body(
+            "/Users/test/Desktop/OCR",
+            datetime(2026, 3, 11, 15, 42),
+            images,
+            ["这是完整正文"],
+            note_text="这是完整正文，后面还有补充。",
+        )
+
+        self.assertEqual(body, "这是完整正文，后面还有补充。")
+
+    def test_build_note_body_avoids_duplicate_when_ocr_contains_note_text(self) -> None:
+        images = [ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1)]
+
+        body = build_note_body(
+            "/Users/test/Desktop/OCR",
+            datetime(2026, 3, 11, 15, 42),
+            images,
+            ["这是完整正文，后面还有补充"],
+            note_text="这是完整正文",
+        )
+
+        self.assertEqual(body, "这是完整正文")
+
+    def test_build_note_body_keeps_both_when_note_text_and_ocr_differ(self) -> None:
+        images = [ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1)]
+
+        body = build_note_body(
+            "/Users/test/Desktop/OCR",
+            datetime(2026, 3, 11, 15, 42),
+            images,
+            ["这是 OCR 补充内容"],
+            note_text="这是笔记正文",
+        )
+
+        self.assertEqual(body, "这是笔记正文\n\n这是 OCR 补充内容")
+
+    def test_build_note_body_avoids_duplicate_when_texts_are_highly_similar(self) -> None:
+        images = [ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1)]
+
+        body = build_note_body(
+            "/Users/test/Desktop/OCR",
+            datetime(2026, 3, 11, 15, 42),
+            images,
+            ["这是 第一段正文，第二段内容！"],
+            note_text="这是第一段正文 第二段内容",
+        )
+
+        self.assertEqual(body, "这是第一段正文 第二段内容")
+
     def test_build_note_body_joins_pages_without_boundary_whitespace(self) -> None:
         images = [
             ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1),

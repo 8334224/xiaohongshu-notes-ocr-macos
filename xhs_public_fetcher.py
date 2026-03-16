@@ -10,7 +10,7 @@ from typing import Optional
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from utils import AppError
+from utils import AppError, clean_note_text
 from xhs_url_validator import ParsedXhsUrl
 
 SCRIPT_TAG_PATTERN = re.compile(r"<script\b[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
@@ -34,6 +34,7 @@ class PublicFetchResult:
     image_urls: list[str]
     title: Optional[str]
     author: Optional[str]
+    note_text: Optional[str]
     extraction_method: Optional[str]
     html_path: Optional[str]
 
@@ -45,12 +46,13 @@ class XhsPublicFetcher:
         self.timeout_seconds = timeout_seconds
 
     def fetch(self, parsed_url: ParsedXhsUrl, html_output_path: Path | str | None = None) -> PublicFetchResult:
-        """Fetch a public note page and extract title, author, and image URLs."""
+        """Fetch a public note page and extract title, author, note text, and image URLs."""
         html, final_url = self._fetch_html(parsed_url.canonical_url)
         saved_html_path = self._save_html_if_requested(html, html_output_path)
 
         title = self._extract_title(html)
         author = self._extract_author(html)
+        note_text = self._extract_note_text(html, title)
         image_urls, extraction_method = self._extract_image_urls(html)
 
         return PublicFetchResult(
@@ -58,6 +60,7 @@ class XhsPublicFetcher:
             image_urls=image_urls,
             title=title,
             author=author,
+            note_text=note_text,
             extraction_method=extraction_method,
             html_path=str(saved_html_path) if saved_html_path else None,
         )
@@ -133,6 +136,23 @@ class XhsPublicFetcher:
             match = re.search(rf'"{field}"\s*:\s*"([^"]+)"', html, re.IGNORECASE)
             if match:
                 return XhsPublicFetcher._unescape_text(match.group(1)).strip() or None
+        return None
+
+    @staticmethod
+    def _extract_note_text(html: str, title: Optional[str]) -> Optional[str]:
+        """Extract lightweight note text from public HTML when available."""
+        meta_values = XhsPublicFetcher._meta_map(html)
+        for key in ("description", "og:description", "twitter:description"):
+            value = meta_values.get(key)
+            if value:
+                return XhsPublicFetcher._clean_note_text(value, title)
+
+        for field in ("desc", "description", "content"):
+            match = re.search(rf'"{field}"\s*:\s*"([^"]+)"', html, re.IGNORECASE)
+            if match:
+                cleaned = XhsPublicFetcher._clean_note_text(XhsPublicFetcher._unescape_text(match.group(1)), title)
+                if cleaned:
+                    return cleaned
         return None
 
     @staticmethod
@@ -330,6 +350,12 @@ class XhsPublicFetcher:
             .replace("&amp;", "&")
             .replace("&quot;", '"')
         )
+
+    @staticmethod
+    def _clean_note_text(value: str, title: Optional[str]) -> Optional[str]:
+        """Apply lightweight text cleanup to extracted note text."""
+        cleaned = clean_note_text(XhsPublicFetcher._unescape_text(value), title or "")
+        return cleaned or None
 
 
 def fetch_public_note(parsed_url: ParsedXhsUrl, html_output_path: Path | str | None = None) -> PublicFetchResult:

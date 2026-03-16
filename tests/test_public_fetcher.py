@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from utils import AppError
+from utils import AppError, clean_note_text
 from xhs_public_fetcher import PublicFetchResult, XhsPublicFetcher, fetch_public_note
 from xhs_url_validator import ParsedXhsUrl
 
@@ -85,6 +85,7 @@ class PublicFetcherTests(unittest.TestCase):
         )
         self.assertEqual(result.title, "公开笔记标题")
         self.assertEqual(result.author, "公开作者")
+        self.assertIsNone(result.note_text)
         self.assertEqual(result.extraction_method, "embedded_json")
         self.assertIsNone(result.html_path)
 
@@ -111,6 +112,7 @@ class PublicFetcherTests(unittest.TestCase):
                 "https://ci.xiaohongshu.com/cover2.jpg",
             ],
         )
+        self.assertIsNone(result.note_text)
         self.assertEqual(result.extraction_method, "meta_tags")
 
     @patch("xhs_public_fetcher.urlopen")
@@ -150,6 +152,116 @@ class PublicFetcherTests(unittest.TestCase):
 
         self.assertEqual(result.author, "测试作者")
         self.assertEqual(result.image_urls, ["https://ci.xiaohongshu.com/body1.jpg"])
+
+    @patch("xhs_public_fetcher.urlopen")
+    def test_fetch_public_note_extracts_note_text_from_meta_description(self, mock_urlopen) -> None:
+        html = """
+        <html>
+          <head>
+            <meta property="og:title" content="公开笔记">
+            <meta name="author" content="作者">
+            <meta name="description" content="第一段\n\n第二段">
+            <meta property="og:image" content="https://ci.xiaohongshu.com/cover.jpg">
+          </head>
+        </html>
+        """
+        mock_urlopen.return_value = _FakeResponse(html, self.parsed_url.canonical_url)
+
+        result = fetch_public_note(self.parsed_url)
+
+        self.assertEqual(result.note_text, "第一段\n\n第二段")
+
+    def test_clean_note_text_removes_repeated_core_title_prefix(self) -> None:
+        cleaned = clean_note_text(
+            "孩子有自己的人生对孩子的过度的干预与越界，既是对孩子生命轨迹的冒犯。",
+            "一念空山-回响：孩子有自己的人生",
+        )
+
+        self.assertEqual(cleaned, "对孩子的过度的干预与越界，既是对孩子生命轨迹的冒犯。")
+
+    def test_clean_note_text_removes_tail_hashtag_block(self) -> None:
+        cleaned = clean_note_text(
+            "正文内容。 #亲子关系 #家庭教育 #孩子的命运",
+            "标题",
+        )
+
+        self.assertEqual(cleaned, "正文内容。")
+
+    def test_clean_note_text_removes_tail_hashtags_after_sentence_punctuation(self) -> None:
+        cleaned = clean_note_text(
+            "正文内容。#金融 #信息差 #商业大佬思维",
+            "标题",
+        )
+
+        self.assertEqual(cleaned, "正文内容。")
+
+    def test_clean_note_text_removes_tail_hashtags_without_newline(self) -> None:
+        cleaned = clean_note_text(
+            "正文内容 #金融 #信息差 #商业大佬思维",
+            "标题",
+        )
+
+        self.assertEqual(cleaned, "正文内容")
+
+    def test_clean_note_text_removes_tail_edit_metadata(self) -> None:
+        cleaned = clean_note_text(
+            "正文内容。 编辑于 18 小时前 浙江",
+            "标题",
+        )
+
+        self.assertEqual(cleaned, "正文内容。")
+
+    def test_clean_note_text_removes_tail_month_day_location_metadata(self) -> None:
+        cleaned = clean_note_text("正文内容。 03-08 北京", "标题")
+
+        self.assertEqual(cleaned, "正文内容。")
+
+    def test_clean_note_text_removes_tail_short_month_day_location_metadata(self) -> None:
+        cleaned = clean_note_text("正文内容。 3-8 北京", "标题")
+
+        self.assertEqual(cleaned, "正文内容。")
+
+    def test_clean_note_text_removes_tail_full_date_location_metadata(self) -> None:
+        cleaned = clean_note_text("正文内容。 2026-03-08 北京", "标题")
+
+        self.assertEqual(cleaned, "正文内容。")
+
+    def test_clean_note_text_removes_tail_slash_date_location_metadata(self) -> None:
+        cleaned = clean_note_text("正文内容。 03/08 北京", "标题")
+
+        self.assertEqual(cleaned, "正文内容。")
+
+    def test_clean_note_text_removes_connected_tags_and_tail_metadata(self) -> None:
+        cleaned = clean_note_text(
+            "正文内容。 #亲子关系 #家庭教育 #尊重孩子的选择编辑于 18 小时前 浙江",
+            "标题",
+        )
+
+        self.assertEqual(cleaned, "正文内容。")
+
+    def test_clean_note_text_removes_connected_tags_and_pure_date_location_metadata(self) -> None:
+        cleaned = clean_note_text(
+            "正文内容。#金融 #商业 03-08 北京",
+            "标题",
+        )
+
+        self.assertEqual(cleaned, "正文内容。")
+
+    def test_clean_note_text_keeps_normal_body_text(self) -> None:
+        cleaned = clean_note_text(
+            "如果你在亲子关系家庭教育中焦虑迷茫，可以听阅我主页的内容。",
+            "标题",
+        )
+
+        self.assertEqual(cleaned, "如果你在亲子关系家庭教育中焦虑迷茫，可以听阅我主页的内容。")
+
+    def test_clean_note_text_keeps_middle_date_in_normal_body(self) -> None:
+        cleaned = clean_note_text(
+            "这篇文章在 03-08 北京开会后形成，后面还有正式分析内容。",
+            "标题",
+        )
+
+        self.assertEqual(cleaned, "这篇文章在 03-08 北京开会后形成，后面还有正式分析内容。")
 
     @patch("xhs_public_fetcher.urlopen")
     def test_fetch_public_note_raises_on_network_failure(self, mock_urlopen) -> None:

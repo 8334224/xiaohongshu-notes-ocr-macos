@@ -1,4 +1,4 @@
-"""Download Xiaohongshu note images via Playwright."""
+"""Download Xiaohongshu note images with public fetch first and browser fallback."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from config import (
     PLAYWRIGHT_WAIT_AFTER_LOAD_MS,
 )
 from downloader_utils import build_download_filename, cleanup_ocr_image_files, ensure_ocr_folder
-from utils import AppError
+from utils import AppError, clean_note_text
 from xhs_public_fetcher import fetch_public_note
 from xhs_url_validator import ParsedXhsUrl, parse_xhs_url
 
@@ -30,7 +30,16 @@ class ExtractedNote:
 
     title: str
     author: str
+    note_text: str | None
     image_urls: list[str]
+
+
+@dataclass(frozen=True)
+class DownloadResult:
+    """Downloaded image paths and the optional extracted note text."""
+
+    paths: list[Path]
+    note_text: str | None
 
 
 @dataclass(frozen=True)
@@ -70,9 +79,17 @@ class XiaohongshuDownloader:
 
     def download_from_url(self, url: str) -> list[Path]:
         """Download note images into the OCR folder and return their paths."""
-        return self.download_from_parsed_url(parse_xhs_url(url))
+        return self.download_from_url_with_result(url).paths
+
+    def download_from_url_with_result(self, url: str) -> DownloadResult:
+        """Download note images and return both file paths and extracted note text."""
+        return self.download_from_parsed_url_with_result(parse_xhs_url(url))
 
     def download_from_parsed_url(self, parsed_url: ParsedXhsUrl) -> list[Path]:
+        """Download note images using public fetch first, then browser fallback."""
+        return self.download_from_parsed_url_with_result(parsed_url).paths
+
+    def download_from_parsed_url_with_result(self, parsed_url: ParsedXhsUrl) -> DownloadResult:
         """Download note images using public fetch first, then browser fallback."""
         self.output_folder.mkdir(parents=True, exist_ok=True)
         folder = self.output_folder
@@ -96,7 +113,7 @@ class XiaohongshuDownloader:
         if not downloaded_paths:
             raise AppError("下载后图片数量为 0，任务已终止。")
 
-        return downloaded_paths
+        return DownloadResult(paths=downloaded_paths, note_text=note.note_text)
 
     def _extract_note_with_fallback(self, parsed_url: ParsedXhsUrl) -> ExtractedNote:
         """Try public no-login extraction first, then fall back to browser extraction."""
@@ -136,6 +153,7 @@ class XiaohongshuDownloader:
                 return ExtractedNote(
                     title=public_result.title,
                     author=public_result.author,
+                    note_text=public_result.note_text,
                     image_urls=public_result.image_urls,
                 )
 
@@ -362,7 +380,20 @@ class XiaohongshuDownloader:
                 ) from exc
             raise AppError(f"页面打开失败：{message}") from exc
 
-        return ExtractedNote(title=title, author=author, image_urls=image_urls)
+        note_text = self._extract_note_text(extracted, title)
+        return ExtractedNote(title=title, author=author, note_text=note_text, image_urls=image_urls)
+
+    @staticmethod
+    def _extract_note_text(extracted: dict[str, object], title: str) -> str | None:
+        """Extract note text conservatively without breaking the image OCR flow."""
+        raw_note_text = str(extracted.get("noteText", "")).strip()
+        if not raw_note_text:
+            return None
+        try:
+            cleaned = clean_note_text(raw_note_text, title)
+        except Exception:
+            return None
+        return cleaned or None
 
     def _open_browser_page(self, playwright, target_url: str):
         """Open a page either in Playwright Chromium or in a local Chrome CDP session."""
@@ -897,9 +928,22 @@ EXTRACTION_SCRIPT = r"""
     'a[href*="/user/profile/"] span',
   ]).replace(/^作者[:：]?\s*/, "");
 
+  const noteText = textFromSelectors([
+    '[data-testid="note-page"] [class*="content"]',
+    '[data-testid="note-page"] article',
+    '.note-content',
+    '.note-text',
+    'article [class*="desc"]',
+    'article',
+    'meta[name="description"]',
+    'meta[property="og:description"]',
+    'meta[name="twitter:description"]',
+  ]).replace(/\s*-\s*小红书.*$/, "");
+
   return {
     title,
     author,
+    noteText,
     imageCandidates,
   };
 }

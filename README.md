@@ -52,8 +52,17 @@
   - 去尾部编辑时间 / 日期 / 地点元信息
 - 自动下载正文图片并按页码命名
 - 使用 macOS Vision OCR 识别中英文混排文本
+- 多图 OCR 使用并发批处理、自动重试、顺序保持与可选进度条
+- OCR 文本会做后处理：
+  - 去空行
+  - 去重复行
+  - 去 emoji
+  - 保留段落结构
 - 最终正文会按“正文文字在前，OCR 在后”的规则合并，并自动做轻量去重
 - 自动写入 Apple Notes
+- 可选按段落生成独立 Apple Notes：
+  - 默认保持原来的单条 Note 写入
+  - 开启 `--notes-by-paragraphs` 后，会按段落逐条写入独立 Notes
 - 自动导出 `output.txt`
 - 剪贴板模式使用临时工作目录：
   - 成功后自动清理
@@ -172,6 +181,8 @@ project/
   config.py
   parser.py
   ocr.py
+  ocr_engine.py
+  text_cleaner.py
   notes_writer.py
   formatter.py
   utils.py
@@ -183,8 +194,11 @@ project/
   run_xhs_ocr.command
   tests/
     test_formatter.py
+    test_notes_writer.py
+    test_ocr_engine.py
     test_parser.py
     test_public_fetcher.py
+    test_text_cleaner.py
     test_v2_download.py
 ```
 
@@ -258,6 +272,31 @@ python3 main.py --from-clipboard
 - `image`：继续图片下载 + OCR
 - `unknown`：有图片组信号时按 `image`，否则按正文优先
 - 如 `public_fetch` 失败或结果不足，再自动回退到 `playwright`
+
+### 按段落生成独立 Notes
+
+如果你希望把 OCR / 正文结果按段落拆成多条 Apple Notes，可以显式开启：
+
+```bash
+python3 main.py --notes-by-paragraphs
+```
+
+常用组合：
+
+```bash
+python3 main.py --notes-by-paragraphs --notes-delay-seconds 0.2 --notes-progress
+```
+
+可选参数：
+
+- `--notes-by-paragraphs`
+  - 开启后按段落生成独立 Notes
+- `--notes-append-index` / `--no-notes-append-index`
+  - 控制标题后是否追加序号
+- `--notes-delay-seconds`
+  - 控制每条 Note 的写入间隔
+- `--notes-progress`
+  - 显示 Notes 写入进度条（需要安装 `tqdm`）
 
 ### 剪贴板 + 本机 Chrome 模式
 
@@ -354,6 +393,11 @@ python3 main.py --from-clipboard --use-local-chrome
   - 如果只有 OCR，只输出 OCR
   - 如果 `note_text` 和 OCR 都有，先输出 `note_text`，空两行，再接 OCR
 - `note_text` 和 OCR 明显重复时，会优先保留 `note_text`，避免重复输出
+- 开启 `--notes-by-paragraphs` 时：
+  - 会先生成完整正文
+  - 再按段落拆分
+  - 每段生成独立 Apple Note
+  - `output.txt` 仍然导出完整正文，不会拆成多个 txt
 - 不保留文件名
 - 不保留页码标记
 - 多页 OCR 正文会按顺序连续拼接
@@ -435,6 +479,9 @@ python3 -m unittest discover -s tests -v
 - 免登录公开抓取
 - `note_text` 提取与小红书正文清洗
 - `note_text + OCR` 合并与轻量去重
+- 并发 OCR、自动重试、批次处理与结果顺序保持
+- OCR 文本清洗与段落拆分
+- 按段落生成独立 Apple Notes
 - 公开抓取结果质量判定
 - 下载文件名兼容现有 parser
 - 手动模式与剪贴板模式目录策略

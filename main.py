@@ -14,8 +14,9 @@ from config import DEFAULT_CHROME_CDP_URL, DEFAULT_NOTES_FOLDER, DEFAULT_TXT_OUT
 from downloader_utils import ensure_ocr_folder
 from formatter import build_note_body, build_note_title
 from notes_writer import NotesWriter
-from ocr import VisionOCR
+from ocr_engine import ConcurrentOCREngine
 from parser import scan_and_validate_images_with_report
+from text_cleaner import TextCleaner
 from utils import AppError, export_text_file, now, strip_redundant_leading_title
 from xhs_downloader import XiaohongshuDownloader
 from xhs_url_validator import validate_xhs_note_url
@@ -53,6 +54,28 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_CHROME_CDP_URL,
         help=f"本机 Chrome 的 CDP 地址，默认：{DEFAULT_CHROME_CDP_URL}",
     )
+    parser.add_argument(
+        "--notes-by-paragraphs",
+        action="store_true",
+        help="将 OCR / 正文内容按段落拆分后，逐段写入独立 Apple Notes。",
+    )
+    parser.add_argument(
+        "--notes-append-index",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="按段落写入 Notes 时，是否在标题后追加序号，默认开启。",
+    )
+    parser.add_argument(
+        "--notes-delay-seconds",
+        type=float,
+        default=0.2,
+        help="按段落写入 Notes 时，每条 Note 的写入间隔秒数，默认：0.2。",
+    )
+    parser.add_argument(
+        "--notes-progress",
+        action="store_true",
+        help="按段落写入 Notes 时显示进度条（需要已安装 tqdm）。",
+    )
     return parser.parse_args()
 
 
@@ -62,6 +85,10 @@ def run_existing_images_flow(
     txt_output: str,
     note_text: str | None = None,
     note_title_override: object = USE_PARSED_NOTE_TITLE,
+    notes_by_paragraphs: bool = False,
+    notes_append_index: bool = True,
+    notes_delay_seconds: float = 0.2,
+    notes_show_progress: bool = False,
 ) -> bool:
     """Run the existing OCR-to-Notes workflow on files already in OCR folder."""
     print(f"扫描 OCR 文件夹：{input_folder}")
@@ -79,19 +106,27 @@ def run_existing_images_flow(
             f"{len(scan_result.ignored_files)} 个（{', '.join(scan_result.ignored_files)}）"
         )
 
-    ocr_engine = VisionOCR()
     results: list[str] = []
     has_note_text = bool(prepared_note_text.strip())
+    ocr_engine = ConcurrentOCREngine()
+    image_paths = [str(image.path) for image in images]
+    if len(images) > 1:
+        print(f"OCR 并发处理中：{len(images)} 张图片，max_workers={ocr_engine.max_workers}")
+    else:
+        print("OCR 处理中：1 张图片")
+    batch_results = ocr_engine.ocr_images(image_paths)
+
     for image in images:
-        print(f"OCR 处理中：第 {image.page} 页 - {image.path.name}")
-        try:
-            recognized_text = ocr_engine.recognize_text(image.path)
-        except Exception as exc:
+        print(f"OCR 结果整理：第 {image.page} 页 - {image.path.name}")
+        image_key = str(image.path)
+        recognized_text = batch_results.get(image_key, "")
+        error = ocr_engine.last_errors.get(image_key)
+        if error is not None:
             if has_note_text:
                 print(f"提示：图片 {image.path.name} OCR 处理异常，继续使用正文内容。")
                 results.append("")
                 continue
-            raise AppError(f"OCR 失败：{image.path.name}") from exc
+            raise AppError(f"OCR 失败：{image.path.name}") from error
 
         if not recognized_text.strip():
             print(f"提示：图片 {image.path.name} OCR 未识别到文本，已跳过该图片 OCR 内容。")
@@ -124,14 +159,27 @@ def run_existing_images_flow(
         print("未提取到正文和 OCR 内容，跳过写入。")
         return True
 
-    print(f"写入苹果备忘录文件夹：{notes_folder}")
-    NotesWriter(notes_folder).create_note(note_title, note_body)
     txt_output_path = Path(txt_output).expanduser()
     txt_export_error = None
     try:
         export_text_file(txt_output_path, note_body)
     except OSError as exc:
         txt_export_error = exc
+
+    print(f"写入苹果备忘录文件夹：{notes_folder}")
+    if notes_by_paragraphs:
+        paragraph_status = _write_paragraph_notes(
+            notes_folder,
+            note_body,
+            note_title or effective_title or "XHS Note",
+            append_index=notes_append_index,
+            delay_seconds=notes_delay_seconds,
+            show_progress=notes_show_progress,
+        )
+        failed_count = sum(1 for success in paragraph_status.values() if not success)
+        print(f"段落 Notes 写入完成：成功 {len(paragraph_status) - failed_count} 条，失败 {failed_count} 条。")
+    else:
+        NotesWriter(notes_folder).create_note(note_title, note_body)
 
     print("完成：已创建新的 Notes 备忘录。")
     print(f"识别图片数量：{len(images)}")
@@ -216,10 +264,34 @@ def _render_link_note_title(note_title: str | None, note_author: str | None) -> 
     return cleaned_title
 
 
+def _write_paragraph_notes(
+    notes_folder: str,
+    note_body: str,
+    base_title: str,
+    append_index: bool,
+    delay_seconds: float,
+    show_progress: bool,
+) -> dict[str, bool]:
+    """Split note body into paragraphs and write one Apple Note per paragraph."""
+    cleaner = TextCleaner()
+    paragraphs = cleaner.structure_text(note_body)
+    writer = NotesWriter(
+        notes_folder,
+        append_index=append_index,
+        delay_seconds=delay_seconds,
+        show_progress=show_progress,
+    )
+    return writer.write_paragraphs(paragraphs, base_title=base_title or "XHS Note")
+
+
 def run_from_clipboard_flow(
     notes_folder: str,
     use_local_chrome: bool = False,
     chrome_cdp_url: str = DEFAULT_CHROME_CDP_URL,
+    notes_by_paragraphs: bool = False,
+    notes_append_index: bool = True,
+    notes_delay_seconds: float = 0.2,
+    notes_show_progress: bool = False,
 ) -> None:
     """Read a Xiaohongshu URL from clipboard, download images, then run OCR."""
     workdir = create_clipboard_workdir()
@@ -272,6 +344,10 @@ def run_from_clipboard_flow(
                 str(txt_output_path),
                 note_text=download_result.note_text,
                 note_title_override=download_result.note_title,
+                notes_by_paragraphs=notes_by_paragraphs,
+                notes_append_index=notes_append_index,
+                notes_delay_seconds=notes_delay_seconds,
+                notes_show_progress=notes_show_progress,
             )
         if txt_success:
             shutil.rmtree(workdir)
@@ -292,10 +368,22 @@ def main() -> int:
                 args.notes_folder,
                 use_local_chrome=args.use_local_chrome,
                 chrome_cdp_url=args.chrome_cdp_url,
+                notes_by_paragraphs=args.notes_by_paragraphs,
+                notes_append_index=args.notes_append_index,
+                notes_delay_seconds=args.notes_delay_seconds,
+                notes_show_progress=args.notes_progress,
             )
         else:
             ensure_ocr_folder()
-            run_existing_images_flow(OCR_FOLDER, args.notes_folder, args.txt_output)
+            run_existing_images_flow(
+                OCR_FOLDER,
+                args.notes_folder,
+                args.txt_output,
+                notes_by_paragraphs=args.notes_by_paragraphs,
+                notes_append_index=args.notes_append_index,
+                notes_delay_seconds=args.notes_delay_seconds,
+                notes_show_progress=args.notes_progress,
+            )
         return 0
     except AppError as exc:
         print(f"错误：{exc}", file=sys.stderr)

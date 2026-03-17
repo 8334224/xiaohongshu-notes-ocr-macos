@@ -291,6 +291,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
                 str(workdir / "output.txt"),
                 note_text="笔记正文",
                 note_title_override="标题",
+                notes_by_paragraphs=False,
+                notes_append_index=True,
+                notes_delay_seconds=0.2,
+                notes_show_progress=False,
             )
 
     @patch("main.run_existing_images_flow")
@@ -336,6 +340,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
                 str(workdir / "output.txt"),
                 note_text="笔记正文",
                 note_title_override="标题",
+                notes_by_paragraphs=False,
+                notes_append_index=True,
+                notes_delay_seconds=0.2,
+                notes_show_progress=False,
             )
 
     @patch("main.write_note_text_only_flow")
@@ -750,6 +758,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             str(workdir / "output.txt"),
             note_text="笔记正文",
             note_title_override="标题",
+            notes_by_paragraphs=False,
+            notes_append_index=True,
+            notes_delay_seconds=0.2,
+            notes_show_progress=False,
         )
 
     @patch("main.write_note_text_only_flow")
@@ -1166,8 +1178,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             folder = Path(temp_dir)
             (folder / "标题_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
 
-            with patch("main.VisionOCR") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
-                mock_ocr_cls.return_value.recognize_text.return_value = "正文"
+            image_path = folder / "标题_1_作者_来自小红书自动下载.jpg"
+            with patch("main.ConcurrentOCREngine") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): "正文"}
+                mock_ocr_cls.return_value.last_errors = {}
                 mock_notes_writer_cls.return_value.create_note.return_value = None
 
                 txt_path = folder / "output.txt"
@@ -1181,8 +1195,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             folder = Path(temp_dir)
             (folder / "无标题笔记_1_北海阿斯汤加瑜伽_来自小红书自动下载.jpg").write_bytes(b"x")
 
-            with patch("main.VisionOCR") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
-                mock_ocr_cls.return_value.recognize_text.return_value = ""
+            image_path = folder / "无标题笔记_1_北海阿斯汤加瑜伽_来自小红书自动下载.jpg"
+            with patch("main.ConcurrentOCREngine") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): ""}
+                mock_ocr_cls.return_value.last_errors = {}
                 txt_path = folder / "output.txt"
                 result = run_existing_images_flow(
                     folder,
@@ -1204,8 +1220,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             folder = Path(temp_dir)
             (folder / "无标题笔记_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
 
-            with patch("main.VisionOCR") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
-                mock_ocr_cls.return_value.recognize_text.return_value = ""
+            image_path = folder / "无标题笔记_1_作者_来自小红书自动下载.jpg"
+            with patch("main.ConcurrentOCREngine") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): ""}
+                mock_ocr_cls.return_value.last_errors = {}
                 txt_path = folder / "output.txt"
                 result = run_existing_images_flow(
                     folder,
@@ -1226,8 +1244,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             folder = Path(temp_dir)
             (folder / "无标题笔记_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
 
-            with patch("main.VisionOCR") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
-                mock_ocr_cls.return_value.recognize_text.return_value = ""
+            image_path = folder / "无标题笔记_1_作者_来自小红书自动下载.jpg"
+            with patch("main.ConcurrentOCREngine") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): ""}
+                mock_ocr_cls.return_value.last_errors = {}
                 txt_path = folder / "output.txt"
                 result = run_existing_images_flow(
                     folder,
@@ -1248,8 +1268,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             folder = Path(temp_dir)
             (folder / "无标题笔记_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
 
-            with patch("main.VisionOCR") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
-                mock_ocr_cls.return_value.recognize_text.return_value = ""
+            image_path = folder / "无标题笔记_1_作者_来自小红书自动下载.jpg"
+            with patch("main.ConcurrentOCREngine") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): ""}
+                mock_ocr_cls.return_value.last_errors = {}
                 txt_path = folder / "output.txt"
                 result = run_existing_images_flow(
                     folder,
@@ -1275,10 +1297,12 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             (folder / "无标题笔记_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
 
             with (
-                patch("main.VisionOCR") as mock_ocr_cls,
+                patch("main.ConcurrentOCREngine") as mock_ocr_cls,
                 patch("main.NotesWriter") as mock_notes_writer_cls,
             ):
-                mock_ocr_cls.return_value.recognize_text.return_value = "   "
+                image_path = folder / "无标题笔记_1_作者_来自小红书自动下载.jpg"
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): "   "}
+                mock_ocr_cls.return_value.last_errors = {}
                 txt_path = folder / "output.txt"
                 result = run_existing_images_flow(
                     folder,
@@ -1298,10 +1322,12 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             (folder / "无标题笔记_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
 
             with (
-                patch("main.VisionOCR") as mock_ocr_cls,
+                patch("main.ConcurrentOCREngine") as mock_ocr_cls,
                 patch("main.NotesWriter") as mock_notes_writer_cls,
             ):
-                mock_ocr_cls.return_value.recognize_text.side_effect = AppError("ocr crashed")
+                image_path = folder / "无标题笔记_1_作者_来自小红书自动下载.jpg"
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): ""}
+                mock_ocr_cls.return_value.last_errors = {str(image_path): AppError("ocr crashed")}
                 txt_path = folder / "output.txt"
                 result = run_existing_images_flow(
                     folder,
@@ -1320,13 +1346,109 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             folder = Path(temp_dir)
             (folder / "标题_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
 
-            with patch("main.VisionOCR") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
-                mock_ocr_cls.return_value.recognize_text.return_value = "OCR 正文"
+            image_path = folder / "标题_1_作者_来自小红书自动下载.jpg"
+            with patch("main.ConcurrentOCREngine") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): "OCR 正文"}
+                mock_ocr_cls.return_value.last_errors = {}
                 txt_path = folder / "output.txt"
                 result = run_existing_images_flow(folder, "OCR", str(txt_path), note_text="")
 
             self.assertTrue(result)
             mock_notes_writer_cls.return_value.create_note.assert_called_once_with("作者：标题", "OCR 正文")
+
+    def test_run_existing_images_flow_can_write_paragraph_notes(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            image_path = folder / "标题_1_作者_来自小红书自动下载.jpg"
+            image_path.write_bytes(b"x")
+
+            with patch("main.ConcurrentOCREngine") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): "第一段\n\n第二段"}
+                mock_ocr_cls.return_value.last_errors = {}
+                mock_notes_writer_cls.return_value.write_paragraphs.return_value = {
+                    "作者：标题 1": True,
+                    "作者：标题 2": True,
+                }
+
+                txt_path = folder / "output.txt"
+                result = run_existing_images_flow(
+                    folder,
+                    "OCR",
+                    str(txt_path),
+                    notes_by_paragraphs=True,
+                    notes_append_index=True,
+                    notes_delay_seconds=0.1,
+                    notes_show_progress=True,
+                )
+
+            self.assertTrue(result)
+            mock_notes_writer_cls.assert_called_once_with(
+                "OCR",
+                append_index=True,
+                delay_seconds=0.1,
+                show_progress=True,
+            )
+            mock_notes_writer_cls.return_value.write_paragraphs.assert_called_once_with(
+                ["第一段", "第二段"],
+                base_title="作者：标题",
+            )
+            mock_notes_writer_cls.return_value.create_note.assert_not_called()
+            self.assertEqual(txt_path.read_text(encoding="utf-8"), "第一段\n\n第二段")
+
+    def test_run_existing_images_flow_paragraph_notes_preserve_note_text_order(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            image_path = folder / "无标题笔记_1_作者_来自小红书自动下载.jpg"
+            image_path.write_bytes(b"x")
+
+            with patch("main.ConcurrentOCREngine") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): "OCR 第一段\n\nOCR 第二段"}
+                mock_ocr_cls.return_value.last_errors = {}
+                mock_notes_writer_cls.return_value.write_paragraphs.return_value = {
+                    "真正标题 1": True,
+                    "真正标题 2": True,
+                    "真正标题 3": True,
+                }
+
+                run_existing_images_flow(
+                    folder,
+                    "OCR",
+                    str(folder / "output.txt"),
+                    note_text="网页第一段\n\n网页第二段",
+                    note_title_override="真正标题",
+                    notes_by_paragraphs=True,
+                )
+
+            mock_notes_writer_cls.return_value.write_paragraphs.assert_called_once_with(
+                ["网页第一段", "网页第二段", "OCR 第一段", "OCR 第二段"],
+                base_title="作者：真正标题",
+            )
+
+    def test_run_existing_images_flow_paragraph_notes_skip_empty_paragraphs(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            image_path = folder / "标题_1_作者_来自小红书自动下载.jpg"
+            image_path.write_bytes(b"x")
+
+            with patch("main.ConcurrentOCREngine") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): "第一段\n\n\n\n第二段"}
+                mock_ocr_cls.return_value.last_errors = {}
+                mock_notes_writer_cls.return_value.write_paragraphs.return_value = {
+                    "作者：标题 1": True,
+                    "作者：标题 2": False,
+                }
+
+                run_existing_images_flow(
+                    folder,
+                    "OCR",
+                    str(folder / "output.txt"),
+                    notes_by_paragraphs=True,
+                )
+
+            mock_notes_writer_cls.return_value.write_paragraphs.assert_called_once_with(
+                ["第一段", "第二段"],
+                base_title="作者：标题",
+            )
 
     def test_run_existing_images_flow_skips_empty_body_write(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -1334,11 +1456,13 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             (folder / "标题_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
 
             with (
-                patch("main.VisionOCR") as mock_ocr_cls,
+                patch("main.ConcurrentOCREngine") as mock_ocr_cls,
                 patch("main.NotesWriter") as mock_notes_writer_cls,
                 patch("builtins.print") as mock_print,
             ):
-                mock_ocr_cls.return_value.recognize_text.return_value = "   "
+                image_path = folder / "标题_1_作者_来自小红书自动下载.jpg"
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): "   "}
+                mock_ocr_cls.return_value.last_errors = {}
                 txt_path = folder / "output.txt"
                 result = run_existing_images_flow(folder, "OCR", str(txt_path), note_text="  ")
 
@@ -1352,8 +1476,10 @@ class ClipboardAndDownloadTests(unittest.TestCase):
             folder = Path(temp_dir)
             (folder / "标题_1_作者_来自小红书自动下载.jpg").write_bytes(b"x")
 
-            with patch("main.VisionOCR") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
-                mock_ocr_cls.return_value.recognize_text.return_value = ""
+            image_path = folder / "标题_1_作者_来自小红书自动下载.jpg"
+            with patch("main.ConcurrentOCREngine") as mock_ocr_cls, patch("main.NotesWriter") as mock_notes_writer_cls:
+                mock_ocr_cls.return_value.ocr_images.return_value = {str(image_path): ""}
+                mock_ocr_cls.return_value.last_errors = {}
                 txt_path = folder / "output.txt"
                 result = run_existing_images_flow(folder, "OCR", str(txt_path))
 

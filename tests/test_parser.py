@@ -50,10 +50,10 @@ class ParserTests(unittest.TestCase):
     def test_detects_too_many_images(self) -> None:
         with TemporaryDirectory() as temp_dir:
             folder = Path(temp_dir)
-            for index in range(1, 30):
+            for index in range(1, 33):
                 (folder / f"标题_{index}_作者_来自小红书网页版.jpg").write_bytes(b"x")
 
-            with self.assertRaisesRegex(AppError, "超过上限 28"):
+            with self.assertRaisesRegex(AppError, "超过上限 31"):
                 scan_and_validate_images(folder)
 
     def test_raises_when_filename_is_invalid(self) -> None:

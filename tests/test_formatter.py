@@ -134,6 +134,29 @@ class FormatterTests(unittest.TestCase):
 
         self.assertEqual(body, "这是第一段正文 第二段内容")
 
+    def test_build_note_body_keeps_long_ocr_when_note_text_is_only_short_summary(self) -> None:
+        images = [ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1)]
+
+        body = build_note_body(
+            "/Users/test/Desktop/OCR",
+            datetime(2026, 3, 21, 10, 0),
+            images,
+            [
+                "Obsidian 能干什么？看完这些用法，你可能低估它了。"
+                "有人在 Reddit 问了一个问题：你用 Obsidian 做过最奇特的事情是什么？"
+                "提问者自己的答案是：用图谱视图梳理自己的数字足迹。"
+            ],
+            note_text="用来管什么，取决于你手里有什么值得被看见的东西。",
+        )
+
+        self.assertEqual(
+            body,
+            "用来管什么，取决于你手里有什么值得被看见的东西。\n\n"
+            "Obsidian 能干什么？看完这些用法，你可能低估它了。"
+            "有人在 Reddit 问了一个问题：你用 Obsidian 做过最奇特的事情是什么？"
+            "提问者自己的答案是：用图谱视图梳理自己的数字足迹。",
+        )
+
     def test_build_note_body_joins_pages_without_boundary_whitespace(self) -> None:
         images = [
             ParsedImage(Path("标题_1_作者_来自小红书网页版.jpg"), "标题", "作者", 1),

@@ -66,10 +66,10 @@ def _is_highly_redundant(note_text: str, ocr_text: str) -> bool:
     normalized_ocr_text = _normalize_for_dedup(ocr_text)
     if not normalized_note_text or not normalized_ocr_text:
         return False
-    if normalized_ocr_text in normalized_note_text:
-        return True
     shorter_length = min(len(normalized_note_text), len(normalized_ocr_text))
     longer_length = max(len(normalized_note_text), len(normalized_ocr_text))
+    if normalized_ocr_text in normalized_note_text:
+        return True
     if (
         normalized_note_text in normalized_ocr_text
         and shorter_length > 0
@@ -81,7 +81,11 @@ def _is_highly_redundant(note_text: str, ocr_text: str) -> bool:
     if compact_note_text and compact_ocr_text:
         if compact_ocr_text in compact_note_text:
             return True
-        if compact_note_text in compact_ocr_text:
+        if (
+            compact_note_text in compact_ocr_text
+            and shorter_length > 0
+            and (longer_length - shorter_length) / shorter_length <= 1.25
+        ):
             return True
         if SequenceMatcher(None, compact_note_text, compact_ocr_text).ratio() >= 0.9:
             return True

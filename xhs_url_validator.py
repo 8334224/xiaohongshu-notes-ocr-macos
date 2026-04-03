@@ -122,11 +122,20 @@ def _extract_share_link_host(url: str) -> Optional[str]:
 
 
 def _resolve_short_url_if_needed(url: str) -> str:
-    """Resolve Xiaohongshu short links into their final note URLs."""
+    """Resolve Xiaohongshu short links into their final note URLs.
+
+    Tries browser-based resolution first (via Playwright CDP if available),
+    falling back to a plain HTTP redirect follow.
+    """
     parsed = urlparse(url)
     host = parsed.netloc.lower()
     if not any(host == suffix or host.endswith(f".{suffix}") for suffix in SHORT_LINK_HOST_SUFFIXES):
         return url
+
+    # Try browser-based resolution to avoid a bare HTTP request
+    resolved = _resolve_short_url_via_browser(url)
+    if resolved:
+        return resolved
 
     request = Request(
         url,
@@ -142,3 +151,28 @@ def _resolve_short_url_if_needed(url: str) -> str:
             return response.geturl()
     except Exception as exc:
         raise AppError(f"小红书短链解析失败：{url}") from exc
+
+
+def _resolve_short_url_via_browser(url: str) -> Optional[str]:
+    """Resolve a short link by navigating in a temporary Playwright page."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp("http://127.0.0.1:9222")
+            try:
+                context = browser.contexts[0] if browser.contexts else None
+                if not context:
+                    return None
+                page = context.new_page()
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                    return page.url
+                finally:
+                    page.close()
+            finally:
+                browser.close()
+    except Exception:
+        return None

@@ -123,10 +123,13 @@ def run_existing_images_flow(
         error = ocr_engine.last_errors.get(image_key)
         if error is not None:
             if has_note_text:
-                print(f"提示：图片 {image.path.name} OCR 处理异常，继续使用正文内容。")
+                print(
+                    f"提示：图片 {image.path.name} OCR 处理异常：{error}。"
+                    " 继续使用正文内容。"
+                )
                 results.append("")
                 continue
-            raise AppError(f"OCR 失败：{image.path.name}") from error
+            raise AppError(f"OCR 失败：{image.path.name}，{error}") from error
 
         if not recognized_text.strip():
             print(f"提示：图片 {image.path.name} OCR 未识别到文本，已跳过该图片 OCR 内容。")

@@ -65,6 +65,48 @@ class ClipboardAndDownloadTests(unittest.TestCase):
         def __init__(self, chromium) -> None:
             self.chromium = chromium
 
+    class _RetryingPayloadPage:
+        def __init__(self) -> None:
+            self.evaluate_calls = 0
+
+        def wait_for_load_state(self, state: str, timeout: int = 0):
+            return None
+
+        def wait_for_timeout(self, ms: int):
+            return None
+
+        def evaluate(self, script: str):
+            self.evaluate_calls += 1
+            if self.evaluate_calls == 1:
+                raise RuntimeError("Execution context was destroyed, most likely because of a navigation.")
+            return {"title": "标题", "author": "作者", "noteText": "正文"}
+
+        def content(self):
+            return "<html><body>正文</body></html>"
+
+        def locator(self, selector: str):
+            class _Locator:
+                def inner_text(self, timeout: int = 0):
+                    return "正文"
+
+            return _Locator()
+
+    class _RetryingScrollPage:
+        def __init__(self) -> None:
+            self.evaluate_calls = 0
+
+        def evaluate(self, script: str):
+            self.evaluate_calls += 1
+            if self.evaluate_calls == 1:
+                raise RuntimeError("Execution context was destroyed, most likely because of a navigation.")
+            return None
+
+        def wait_for_load_state(self, state: str, timeout: int = 0):
+            return None
+
+        def wait_for_timeout(self, ms: int):
+            return None
+
     def test_validate_url_rejects_non_xhs_url(self) -> None:
         with self.assertRaisesRegex(AppError, "不是支持的小红书"):
             validate_xhs_note_url("https://example.com/post/123")
@@ -859,6 +901,37 @@ class ClipboardAndDownloadTests(unittest.TestCase):
         self.assertNotIn("videoInfo", EXTRACTION_SCRIPT)
         self.assertNotIn("masterUrl", EXTRACTION_SCRIPT)
         self.assertNotIn("h264Url", EXTRACTION_SCRIPT)
+
+    def test_extract_page_payload_retries_once_when_navigation_destroys_context(self) -> None:
+        downloader = XiaohongshuDownloader()
+        page = self._RetryingPayloadPage()
+
+        extracted, html, page_text = downloader._extract_page_payload(page)
+
+        self.assertEqual(extracted["title"], "标题")
+        self.assertEqual(html, "<html><body>正文</body></html>")
+        self.assertEqual(page_text, "正文")
+        self.assertEqual(page.evaluate_calls, 2)
+
+    def test_extract_page_payload_raises_when_navigation_context_error_persists(self) -> None:
+        downloader = XiaohongshuDownloader()
+        page = self._RetryingPayloadPage()
+
+        def always_fail(script: str):
+            raise RuntimeError("Execution context was destroyed, most likely because of a navigation.")
+
+        page.evaluate = always_fail
+
+        with self.assertRaisesRegex(RuntimeError, "Execution context was destroyed"):
+            downloader._extract_page_payload(page)
+
+    def test_scroll_page_retries_once_when_navigation_destroys_context(self) -> None:
+        downloader = XiaohongshuDownloader()
+        page = self._RetryingScrollPage()
+
+        downloader._scroll_page(page)
+
+        self.assertEqual(page.evaluate_calls, 2)
 
     def test_public_fetch_quality_rejects_generic_title_and_missing_author(self) -> None:
         result = PublicFetchResult(

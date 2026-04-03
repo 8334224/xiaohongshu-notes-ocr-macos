@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ class ExtractedNote:
     note_text: str | None
     note_type: str
     image_urls: list[str]
+    browser_downloaded_paths: list[Path] | None = None
 
 
 @dataclass(frozen=True)
@@ -139,12 +141,15 @@ class XiaohongshuDownloader:
         if note.note_type == "video":
             raise AppError("逻辑错误：video 分支不应进入图片下载。")
 
-        downloaded_paths: list[Path] = []
-        for index, image_url in enumerate(note.image_urls, start=1):
-            filename = build_download_filename(note.title, note.author, index, image_url)
-            target_path = folder / filename
-            self._download_image(image_url, target_path, referer=parsed_url.canonical_url)
-            downloaded_paths.append(target_path)
+        if note.browser_downloaded_paths:
+            downloaded_paths = note.browser_downloaded_paths
+        else:
+            downloaded_paths = []
+            for index, image_url in enumerate(note.image_urls, start=1):
+                filename = build_download_filename(note.title, note.author, index, image_url)
+                target_path = folder / filename
+                self._download_image(image_url, target_path, referer=parsed_url.canonical_url)
+                downloaded_paths.append(target_path)
 
         print(f"最终下载数量：{len(downloaded_paths)}")
 
@@ -161,6 +166,10 @@ class XiaohongshuDownloader:
 
     def _extract_note_with_fallback(self, parsed_url: ParsedXhsUrl) -> ExtractedNote:
         """Try public no-login extraction first, then fall back to browser extraction."""
+        if self.use_local_chrome:
+            print("抓取策略：local_chrome 模式，跳过 public_fetch，直接使用本机 Chrome")
+            return self._extract_note(parsed_url.canonical_url)
+
         public_debug_path = self.debug_folder / "public_fetch.html"
         public_debug_summary_path = self.debug_folder / "public_fetch_debug.txt"
         public_debug_json_path = self.debug_folder / "public_fetch_debug.json"
@@ -380,19 +389,20 @@ class XiaohongshuDownloader:
                     print("提示：开始打开目标页面")
                     if page.url != url:
                         try:
+                            page.wait_for_timeout(random.randint(500, 2000))
                             page.goto(url, wait_until="domcontentloaded", timeout=PLAYWRIGHT_TIMEOUT_MS)
                         except PlaywrightTimeoutError as exc:
                             raise AppError("页面已创建，但打开目标链接失败：超时。") from exc
                         except PlaywrightError as exc:
                             raise AppError(f"页面已创建，但打开目标链接失败：{exc}") from exc
+                    else:
+                        page.wait_for_timeout(random.randint(300, 1000))
                     print("提示：页面打开成功，开始提取内容")
-                    page.wait_for_timeout(PLAYWRIGHT_WAIT_AFTER_LOAD_MS)
+                    page.wait_for_timeout(PLAYWRIGHT_WAIT_AFTER_LOAD_MS + random.randint(0, 1500))
                     self._scroll_page(page)
-                    page.wait_for_timeout(500)
+                    page.wait_for_timeout(random.randint(300, 1000))
                     try:
-                        extracted = page.evaluate(EXTRACTION_SCRIPT)
-                        html = page.content()
-                        page_text = page.locator("body").inner_text(timeout=5000)
+                        extracted, html, page_text = self._extract_page_payload(page)
                     except PlaywrightTimeoutError as exc:
                         raise AppError("页面已打开，但正文提取脚本执行失败：超时。") from exc
                     except PlaywrightError as exc:
@@ -432,6 +442,14 @@ class XiaohongshuDownloader:
                     if not image_urls and note_type != "video":
                         self._save_debug_artifacts(page, html)
                         raise AppError("页面没有图片，或当前版本未抓到图文图片。")
+
+                    browser_downloaded_paths = None
+                    if browser_mode == "local_chrome" and image_urls and note_type != "video":
+                        browser_downloaded_paths = self._download_images_via_browser(
+                            page, image_urls,
+                            title=title or UNTITLED_DOWNLOAD_TITLE,
+                            author=author,
+                        )
                 except AppError:
                     raise
                 except Exception:
@@ -456,7 +474,39 @@ class XiaohongshuDownloader:
             note_text=note_text,
             note_type=note_type,
             image_urls=image_urls,
+            browser_downloaded_paths=browser_downloaded_paths,
         )
+
+    @staticmethod
+    def _is_navigation_context_error(exc: Exception) -> bool:
+        """Return True when Playwright failed because the page was navigating."""
+        message = str(exc)
+        return (
+            "Execution context was destroyed" in message
+            or "Cannot find context with specified id" in message
+            or "Most likely the page has been closed" in message
+        )
+
+    def _extract_page_payload(self, page) -> tuple[dict[str, object], str, str]:
+        """Extract structured page data, retrying once if navigation destroys the execution context."""
+        last_exc: Exception | None = None
+        for attempt in range(1, 3):
+            try:
+                if attempt > 1:
+                    print(f"提示：页面发生跳转，正在重试正文提取（第 {attempt} 次）。")
+                    page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    page.wait_for_timeout(800)
+                extracted = page.evaluate(EXTRACTION_SCRIPT)
+                html = page.content()
+                page_text = page.locator("body").inner_text(timeout=5000)
+                return extracted, html, page_text
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= 2 or not self._is_navigation_context_error(exc):
+                    raise
+                page.wait_for_timeout(1200)
+        assert last_exc is not None  # pragma: no cover
+        raise last_exc
 
     @staticmethod
     def _extract_author_from_html(html: str) -> str:
@@ -648,21 +698,36 @@ class XiaohongshuDownloader:
         print(f"最终选中的 page URL：{selected_page.url or 'about:blank'}")
         return browser, selected_page, False, "local_chrome"
 
-    @staticmethod
-    def _scroll_page(page) -> None:
+    def _scroll_page(self, page) -> None:
         """Scroll the page to encourage lazy-loaded images to appear."""
-        page.evaluate(
-            """
-            async () => {
-              const step = 800;
-              for (let i = 0; i < 5; i += 1) {
-                window.scrollBy(0, step);
-                await new Promise((resolve) => setTimeout(resolve, 250));
-              }
-              window.scrollTo(0, 0);
-            }
-            """
-        )
+        scroll_steps = random.randint(3, 6)
+        base_step = random.randint(400, 900)
+        base_delay = random.randint(300, 800)
+        for attempt in range(1, 3):
+            try:
+                page.evaluate(
+                    """
+                    async (params) => {
+                      const { steps, baseStep, baseDelay } = params;
+                      for (let i = 0; i < steps; i++) {
+                        const step = baseStep + Math.floor(Math.random() * 200 - 100);
+                        const delay = baseDelay + Math.floor(Math.random() * 300);
+                        window.scrollBy(0, step);
+                        await new Promise((resolve) => setTimeout(resolve, delay));
+                      }
+                      await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 500 + 300)));
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                    """,
+                    {"steps": scroll_steps, "baseStep": base_step, "baseDelay": base_delay},
+                )
+                return
+            except Exception as exc:
+                if attempt >= 2 or not self._is_navigation_context_error(exc):
+                    raise
+                print(f"提示：页面滚动阶段发生跳转，正在重试（第 {attempt + 1} 次）。")
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+                page.wait_for_timeout(800)
 
     @staticmethod
     def _build_page_signals(extracted: dict[str, object], html: str, page_text: str) -> PageSignals:
@@ -969,6 +1034,37 @@ class XiaohongshuDownloader:
         self.debug_folder.mkdir(parents=True, exist_ok=True)
         return self.debug_folder
 
+    def _download_images_via_browser(
+        self, page, image_urls: list[str], title: str, author: str,
+    ) -> list[Path]:
+        """Download images through the browser context's request API to share session."""
+        folder = self.output_folder
+        request_context = page.context.request
+        downloaded: list[Path] = []
+        for index, image_url in enumerate(image_urls, start=1):
+            filename = build_download_filename(title, author, index, image_url)
+            target_path = folder / filename
+            try:
+                response = request_context.get(
+                    image_url,
+                    headers={"Referer": "https://www.xiaohongshu.com/"},
+                )
+                if not response.ok:
+                    raise AppError(f"浏览器内下载图片失败（HTTP {response.status}）：{image_url}")
+                data = response.body()
+                if not data:
+                    raise AppError(f"浏览器内下载图片失败（空响应）：{image_url}")
+                target_path.write_bytes(data)
+                downloaded.append(target_path)
+                delay = random.uniform(0.3, 1.2)
+                page.wait_for_timeout(int(delay * 1000))
+            except AppError:
+                raise
+            except Exception as exc:
+                raise AppError(f"浏览器内下载图片失败：{image_url}") from exc
+        print(f"通过浏览器下载图片完成：{len(downloaded)} 张")
+        return downloaded
+
     @staticmethod
     def _download_image(image_url: str, target_path: Path, referer: str) -> None:
         """Download a single image to disk."""
@@ -1054,9 +1150,6 @@ EXTRACTION_SCRIPT = r"""
 
   const tryCollectEmbeddedData = () => {
     const roots = [];
-    for (const key of ["__INITIAL_STATE__", "__INITIAL_SSR_STATE__", "__SSR_DATA__", "__NEXT_DATA__", "__REDUX_STATE__"]) {
-      if (window[key]) roots.push({ path: key, value: window[key] });
-    }
     for (const script of document.querySelectorAll('script:not([src])')) {
       const text = (script.textContent || "").trim();
       if (!text || !/(image|images|note|media|swiper|photo|pic|cover)/i.test(text)) continue;

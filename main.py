@@ -1,4 +1,4 @@
-"""CLI entry point for Xiaohongshu image OCR to Apple Notes."""
+"""CLI entry point for Xiaohongshu image OCR to Obsidian notes."""
 
 from __future__ import annotations
 
@@ -27,12 +27,12 @@ USE_PARSED_NOTE_TITLE = object()
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="按文件名顺序 OCR ~/Desktop/OCR 下的小红书图片并写入苹果备忘录。"
+        description="按文件名顺序 OCR ~/Desktop/OCR 下的小红书图片并写入 Obsidian 笔记。"
     )
     parser.add_argument(
         "--notes-folder",
-        default=DEFAULT_NOTES_FOLDER,
-        help=f"苹果备忘录目标文件夹，默认：{DEFAULT_NOTES_FOLDER}",
+        default=str(DEFAULT_NOTES_FOLDER),
+        help=f"Obsidian 笔记输出目录，默认：{DEFAULT_NOTES_FOLDER}",
     )
     parser.add_argument(
         "--txt-output",
@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--notes-by-paragraphs",
         action="store_true",
-        help="将 OCR / 正文内容按段落拆分后，逐段写入独立 Apple Notes。",
+        help="将 OCR / 正文内容按段落拆分后，逐段写入独立 Obsidian 笔记。",
     )
     parser.add_argument(
         "--notes-append-index",
@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
 
 def run_existing_images_flow(
     input_folder: Path,
-    notes_folder: str,
+    notes_folder: str | Path,
     txt_output: str,
     note_text: str | None = None,
     note_title_override: object = USE_PARSED_NOTE_TITLE,
@@ -150,7 +150,7 @@ def run_existing_images_flow(
                 export_text_file(txt_output_path, note_title or effective_title)
             except OSError as exc:
                 txt_export_error = exc
-            print("完成：已创建新的 Notes 备忘录。")
+            print("完成：已写入 Obsidian 笔记。")
             print(f"识别图片数量：{len(images)}")
             print(f"笔记标题：{effective_title}")
             print(f"备忘录标题：{note_title}")
@@ -169,7 +169,7 @@ def run_existing_images_flow(
     except OSError as exc:
         txt_export_error = exc
 
-    print(f"写入苹果备忘录文件夹：{notes_folder}")
+    print(f"写入 Obsidian 笔记目录：{notes_folder}")
     if notes_by_paragraphs:
         paragraph_status = _write_paragraph_notes(
             notes_folder,
@@ -180,11 +180,11 @@ def run_existing_images_flow(
             show_progress=notes_show_progress,
         )
         failed_count = sum(1 for success in paragraph_status.values() if not success)
-        print(f"段落 Notes 写入完成：成功 {len(paragraph_status) - failed_count} 条，失败 {failed_count} 条。")
+        print(f"段落笔记写入完成：成功 {len(paragraph_status) - failed_count} 条，失败 {failed_count} 条。")
     else:
         NotesWriter(notes_folder).create_note(note_title, note_body)
 
-    print("完成：已创建新的 Notes 备忘录。")
+    print("完成：已写入 Obsidian 笔记。")
     print(f"识别图片数量：{len(images)}")
     if effective_title:
         print(f"笔记标题：{effective_title}")
@@ -207,7 +207,7 @@ def create_clipboard_workdir() -> Path:
 
 
 def write_note_text_only_flow(
-    notes_folder: str,
+    notes_folder: str | Path,
     txt_output: str,
     note_text: str | None,
     note_title: str | None = None,
@@ -228,7 +228,7 @@ def write_note_text_only_flow(
         print("未提取到正文和 OCR 内容，跳过写入。")
         return True
 
-    print(f"写入苹果备忘录文件夹：{notes_folder}")
+    print(f"写入 Obsidian 笔记目录：{notes_folder}")
     NotesWriter(notes_folder).create_note(rendered_title, note_body)
     txt_output_path = Path(txt_output).expanduser()
     txt_export_error = None
@@ -241,7 +241,7 @@ def write_note_text_only_flow(
     except OSError as exc:
         txt_export_error = exc
 
-    print("完成：已创建新的 Notes 备忘录。")
+    print("完成：已写入 Obsidian 笔记。")
     print("识别图片数量：0")
     if effective_title:
         print(f"笔记标题：{effective_title}")
@@ -268,14 +268,14 @@ def _render_link_note_title(note_title: str | None, note_author: str | None) -> 
 
 
 def _write_paragraph_notes(
-    notes_folder: str,
+    notes_folder: str | Path,
     note_body: str,
     base_title: str,
     append_index: bool,
     delay_seconds: float,
     show_progress: bool,
 ) -> dict[str, bool]:
-    """Split note body into paragraphs and write one Apple Note per paragraph."""
+    """Split note body into paragraphs and write one Obsidian note per paragraph."""
     cleaner = TextCleaner()
     paragraphs = cleaner.structure_text(note_body)
     writer = NotesWriter(
@@ -288,7 +288,7 @@ def _write_paragraph_notes(
 
 
 def run_from_clipboard_flow(
-    notes_folder: str,
+    notes_folder: str | Path,
     use_local_chrome: bool = False,
     chrome_cdp_url: str = DEFAULT_CHROME_CDP_URL,
     notes_by_paragraphs: bool = False,

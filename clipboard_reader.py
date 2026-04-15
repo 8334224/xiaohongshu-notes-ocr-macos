@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 from utils import AppError
 
 
 def read_clipboard_text() -> str:
-    """Read plain text from the macOS system clipboard."""
+    """Read plain text from the XHS_URL env var or the macOS system clipboard."""
+    env_url = os.environ.get("XHS_URL", "").strip()
+    if env_url:
+        return env_url
+
     try:
         completed = subprocess.run(
             ["pbpaste"],

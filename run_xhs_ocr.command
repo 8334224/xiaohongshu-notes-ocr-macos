@@ -16,7 +16,7 @@ python3 main.py
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 0 ]; then
-  open -a Notes
+  open -a Obsidian
   exit 0
 else
   echo

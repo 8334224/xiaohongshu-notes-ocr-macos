@@ -1,12 +1,13 @@
-# 小红书图片 OCR -> Apple Notes
+# 小红书图片 OCR -> Obsidian
 
 [![Release](https://img.shields.io/github/v/release/8334224/xiaohongshu-notes-ocr-macos)](https://github.com/8334224/xiaohongshu-notes-ocr-macos/releases/tag/v0.3.0)
 ![Python](https://img.shields.io/badge/python-3-blue)
 ![macOS](https://img.shields.io/badge/platform-macOS-black)
 ![Strategy](https://img.shields.io/badge/download-public__fetch_%E2%86%92_browser-green)
+![Output](https://img.shields.io/badge/output-Obsidian_Markdown-purple)
 
 一个面向 macOS 的本地 Python 工具：  
-支持从小红书网页链接或本地图片提取正文；链接模式会先做 `note_type` 判定，视频笔记直接输出文字，图文笔记继续图片下载 + OCR，最终写入 Apple Notes 并导出纯文本。
+支持从小红书网页链接或本地图片提取正文；链接模式会先做 `note_type` 判定，视频笔记直接输出文字，图文笔记继续图片下载 + OCR，最终以 Markdown 文件写入 Obsidian vault 并导出纯文本。
 
 ## Overview
 
@@ -20,10 +21,11 @@
 6. 图文笔记继续下载图片并使用 macOS Vision OCR 识别图片文字
 7. 对正文文字和 OCR 结果分别做轻量清洗
 8. 按规则合并为一篇最终正文
-9. 自动归档到 Apple Notes，并导出纯文本
+9. 自动写入 Obsidian vault 的「小红书」文件夹，并导出纯文本
 
 重点不是做通用爬虫，而是尽量稳定地跑通个人高频使用场景。  
 当前实现里，`--use-local-chrome` 是更强的浏览器兜底，不是第一优先级。
+配套的 `run_xhs_ocr.applescript` 可以从剪贴板一键静默执行整个流程，全程无终端窗口。
 
 ## Features
 
@@ -59,11 +61,17 @@
   - 去 emoji
   - 保留段落结构
 - 最终正文会按“正文文字在前，OCR 在后”的规则合并，并自动做轻量去重
-- 自动写入 Apple Notes
-- 可选按段落生成独立 Apple Notes：
-  - 默认保持原来的单条 Note 写入
-  - 开启 `--notes-by-paragraphs` 后，会按段落逐条写入独立 Notes
+- 自动写入 Obsidian vault 的「小红书」文件夹，格式为标准 Markdown (`.md`)
+- 标题作为文件名，`/`、`:`、`*`、`?` 等非法字符会替换为 `-`
+- 同名文件自动追加序号，避免覆盖
+- 可选按段落生成独立 Obsidian 笔记：
+  - 默认保持原来的单文件写入
+  - 开启 `--notes-by-paragraphs` 后，会按段落逐条写入独立 `.md`
 - 自动导出 `output.txt`
+- 提供一键启动 `run_xhs_ocr.applescript`：
+  - 从剪贴板直接读取链接并后台运行
+  - 成功 / 失败通过通知中心提示，无终端窗口
+  - 通过环境变量传递 URL，不依赖 `pbpaste` 权限
 - 剪贴板模式使用临时工作目录：
   - 成功后自动清理
   - 失败时保留下载图片、调试截图、HTML 和文本输出
@@ -129,7 +137,7 @@ Clean note_text and OCR text
         ↓
 Merge note_text + OCR with light deduplication when OCR exists
         ↓
-Write to Apple Notes
+Write Markdown (.md) into Obsidian vault / 小红书 folder
         ↓
 Export output.txt
 ```
@@ -192,6 +200,8 @@ project/
   downloader_utils.py
   xhs_downloader.py
   run_xhs_ocr.command
+  run_xhs_ocr.applescript
+  run_xhs_local_chrome.sh
   tests/
     test_formatter.py
     test_notes_writer.py
@@ -208,8 +218,9 @@ project/
 - Playwright
 - macOS Vision OCR
 - PyObjC
-- AppleScript
+- AppleScript（静默启动器，不再依赖 osascript 写 Notes）
 - Google Chrome CDP (optional)
+- Obsidian（通过直接写 Markdown 文件到 vault 实现）
 
 ## Installation
 
@@ -273,9 +284,25 @@ python3 main.py --from-clipboard
 - `unknown`：有图片组信号时按 `image`，否则按正文优先
 - 如 `public_fetch` 失败或结果不足，再自动回退到 `playwright`
 
+### 一键静默启动（推荐）
+
+项目提供了一个 `run_xhs_ocr.applescript`，可以从剪贴板直接读取链接、在后台运行整个流程、全程无终端窗口，成功或失败都通过 macOS 通知中心提示：
+
+1. 在浏览器或小红书 App 中复制目标笔记链接
+2. 运行 `run_xhs_ocr.applescript`（可以在 Script Editor 里运行、编译成 `.scpt`、或做成快捷指令 / 菜单栏按钮）
+
+脚本做的事：
+
+- 把系统剪贴板内容作为 `XHS_URL` 环境变量导出
+- 以 `do shell script` 方式调用 `run_xhs_local_chrome.sh`
+- 成功时显示通知 `已写入 Obsidian 笔记`
+- 失败时显示通知并附带错误信息
+
+这样就不需要打开 Terminal，也不会弹出任何窗口。
+
 ### 按段落生成独立 Notes
 
-如果你希望把 OCR / 正文结果按段落拆成多条 Apple Notes，可以显式开启：
+如果你希望把 OCR / 正文结果按段落拆成多个独立的 Obsidian `.md`，可以显式开启：
 
 ```bash
 python3 main.py --notes-by-paragraphs
@@ -381,7 +408,29 @@ python3 main.py --from-clipboard --use-local-chrome
 
 两种命名都兼容当前 parser。
 
-## Notes Output
+## Obsidian Output
+
+默认写入路径：
+
+```text
+~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian/小红书/
+```
+
+这是 iCloud 同步的 Obsidian vault 默认位置。如需改到本地 vault，修改 `config.py` 中的 `OBSIDIAN_VAULT_PATH` 和 `DEFAULT_OBSIDIAN_FOLDER`，或启动时通过 `--notes-folder` 覆盖。
+
+写入规则：
+
+- 每条笔记一个 `.md` 文件，标题作为文件名
+- 文件名非法字符（`/`、`:`、`*`、`?`、`"`、`<`、`>`、`|`、`\`）统一替换为 `-`
+- 文件名重复时自动追加序号（`标题 2.md`、`标题 3.md` …）
+- 文件内容格式：
+  ```markdown
+  # {title}
+
+  {body}
+  ```
+
+内容规则：
 
 - 标题格式：`作者：文章标题`
 - 本地图片模式：
@@ -396,7 +445,7 @@ python3 main.py --from-clipboard --use-local-chrome
 - 开启 `--notes-by-paragraphs` 时：
   - 会先生成完整正文
   - 再按段落拆分
-  - 每段生成独立 Apple Note
+  - 每段生成独立 `.md` 文件
   - `output.txt` 仍然导出完整正文，不会拆成多个 txt
 - 不保留文件名
 - 不保留页码标记
@@ -481,7 +530,7 @@ python3 -m unittest discover -s tests -v
 - `note_text + OCR` 合并与轻量去重
 - 并发 OCR、自动重试、批次处理与结果顺序保持
 - OCR 文本清洗与段落拆分
-- 按段落生成独立 Apple Notes
+- 按段落生成独立 Obsidian Markdown 笔记
 - 公开抓取结果质量判定
 - 下载文件名兼容现有 parser
 - 手动模式与剪贴板模式目录策略
